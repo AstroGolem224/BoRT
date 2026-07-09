@@ -1,5 +1,6 @@
 """CustomTkinter-GUI für die Transkriptions-App."""
 
+import json
 import logging
 import platform
 import queue
@@ -46,6 +47,22 @@ BACKENDS = {
     "whisperX (GPU + Diarization)": "whisperx",
 }
 WHISPERX_MODELS = ["large-v3", "large-v2", "medium", "small", "base", "tiny"]
+
+
+def _looks_like_marker_file(path: Path) -> bool:
+    """Prüft heuristisch, ob ``path`` eine lesbare Marker-JSON ist.
+
+    Verhindert, dass zufällige ``<stem>.json``-Dateien ohne Marker-Bezug
+    (z.B. andere Metadaten) als Marker übernommen werden. Akzeptiert werden
+    JSON-Objekte mit einem ``markers``-Feld (Liste) – das deckt sowohl das
+    Android-Format als auch das BoRT-Format ab.
+    """
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return False
+    return isinstance(data, dict) and isinstance(data.get("markers"), list)
 
 
 @dataclass
@@ -762,6 +779,47 @@ class TranscriptionApp:
             ],
             initialdir_key="last_audio_dir",
         )
+        # Begleit-JSON automatisch laden (Partner-App BookofRecords oder
+        # BoRT-eigene Marker-Datei), falls vorhanden und das Marker-Feld leer
+        # bzw. nicht mehr passend ist.
+        audio_path = self.audio_var.get()
+        if audio_path:
+            self._auto_load_companion_marker(Path(audio_path))
+
+    def _auto_load_companion_marker(self, audio_path: Path) -> None:
+        """Sucht eine passende Marker-JSON zum Audio und trägt sie ein.
+
+        Reihenfolge (gleicher Ordner wie das Audio):
+          1. ``<stem>.json`` – Android-Partner-App (BookofRecords) mit Bookmarks
+          2. ``<stem>.markers.json`` – BoRT-eigene Auto-Marker (whisperX)
+
+        Es wird nur eingetragen, wenn das Feld aktuell leer ist oder die
+        gesetzte Datei nicht (mehr) existiert – eine bewusst gewählte Datei
+        wird nicht überschrieben. Ungültige JSONs werden still verworfen.
+        """
+        current = self.marker_var.get().strip()
+        if current and Path(current).exists():
+            # Bereits eine gültige Marker-Datei gesetzt – nichts ändern.
+            return
+
+        candidates = [
+            audio_path.with_suffix(".json"),
+            audio_path.parent / f"{audio_path.stem}.markers.json",
+        ]
+        for cand in candidates:
+            if not cand.exists():
+                continue
+            if not _looks_like_marker_file(cand):
+                continue
+            self.marker_var.set(str(cand))
+            self.config.set_path("last_marker_path", cand)
+            self.config.set_path("last_marker_dir", cand.parent)
+            self.config.save()
+            self._log("INFO", f"Marker-JSON automatisch geladen: {cand.name}")
+            return
+        # Keine passende JSON gefunden – ggf. veralteten Eintrag löschen.
+        if current and not Path(current).exists():
+            self.marker_var.set("")
 
     def _browse_marker(self) -> None:
         self._browse_file(
