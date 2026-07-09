@@ -1,5 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller spec für transcribe-app (all-in-one Bundle).
+"""PyInstaller spec für BoRT (all-in-one Bundle).
 
 Bündelt die GUI + CLI + alle Python-Abhängigkeiten (customtkinter etc.).
 Die Backends bleiben externe Subprocess-Aufrufe:

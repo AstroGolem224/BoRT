@@ -15,12 +15,12 @@ Eine kommandzeilenbasierte Python-App bauen, die:
 ## Architektur
 
 ```
-transcribe-app/
+BoRT/
 ├── pyproject.toml
 ├── README.md
 ├── AGENTS.md
 ├── src/
-│   └── transcribe_app/
+│   └── bort/
 │       ├── __init__.py
 │       ├── cli.py                 # Argumentparser, Orchestrierung
 │       ├── audio.py               # MP3 → WAV (16 kHz, mono) via ffmpeg
@@ -89,7 +89,7 @@ Argumente:
 - `--keep-wav`: temporäre WAV-Datei behalten
 
 ## Implementierungsschritte
-1. Projektordner `transcribe-app` anlegen.
+1. Projektordner `BoRT` anlegen.
 2. `pyproject.toml` mit Dependencies (`whisper-cpp-python`, ggf. `ffmpeg-python` oder reines subprocess) erstellen.
 3. Modulstruktur unter `src/bort/` anlegen.
 4. `audio.py`, `markers.py`, `speakers.py`, `transcription.py`, `writers.py`, `cli.py` implementieren.

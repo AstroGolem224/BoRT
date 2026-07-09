@@ -1,4 +1,4 @@
-# Plan: Tkinter-GUI für transcribe-app
+# Plan: Tkinter-GUI für BoRT
 
 ## Ziel
 Eine grafische Oberfläche (GUI) hinzufügen, mit der der Nutzer:

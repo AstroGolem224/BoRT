@@ -69,7 +69,7 @@ def load_markers(path: Path | str) -> tuple[dict[str, str], list[SpeakerMarker]]
     """Lädt eine JSON-Marker-Datei.
 
     Unterstützt zwei Formate:
-    1. **transcribe-app-Format** (Intervall-Marker):
+    1. **BoRT-Format** (Intervall-Marker):
        ``{"speakers": {id: name}, "markers": [{start, end, speaker}]}``
     2. **Android-Format** (Punkt-Marker, z.B. von der Partner-App):
        ``{"version": 1, "file": "...", "markers": [{timeMs, type, label}]}``
@@ -110,7 +110,7 @@ def load_markers(path: Path | str) -> tuple[dict[str, str], list[SpeakerMarker]]
         logger.info("Erkanntes Format: Android (Punkt-Marker in ms)")
         return _load_android_markers(data, raw_markers)
 
-    # transcribe-app-Format (Intervall-Marker)
+    # BoRT-Format (Intervall-Marker)
     speakers = data.get("speakers", {})
     if not isinstance(speakers, dict):
         raise MarkerError("'speakers' muss ein Objekt sein.")
@@ -244,7 +244,7 @@ def save_markers(
     markers: list[SpeakerMarker],
     path: Path | str,
 ) -> Path:
-    """Schreibt eine Marker-Datei im transcribe-app-Format.
+    """Schreibt eine Marker-Datei im BoRT-Format.
 
     Args:
         speakers: Mapping Sprecher-ID -> Anzeigename.

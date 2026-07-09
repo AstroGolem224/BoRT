@@ -1,9 +1,9 @@
 """whisperX-Backend: automatische Transkription + Sprecher-Diarisierung.
 
 Ruft die whisperX-Pipeline im whisper-tagger-Projekt als Subprocess auf und
-wandelt das Ergebnis in das transcribe-app-Datenmodell um (SpeakerMarker +
+wandelt das Ergebnis in das BoRT-Datenmodell um (SpeakerMarker +
 Segment). So bleibt die GPU/PyTorch-Abhängigkeit im separaten uv-Projekt
-gekapselt, während die transcribe-app schlank bleibt (wie bei whisper.cpp).
+gekapselt, während BoRT schlank bleibt (wie bei whisper.cpp).
 
 Das Backend erzeugt drei Dinge:
 - ``segments``: reine Transkriptionssegmente (ohne Sprecher)
@@ -182,7 +182,7 @@ def _build_speaker_map(
 def _to_domain(
     data: dict,
 ) -> tuple[list[Segment], list[SpeakerMarker], dict[str, str]]:
-    """Wandelt das whisperX-JSON in das transcribe-app-Datenmodell um."""
+    """Wandelt das whisperX-JSON in das BoRT-Datenmodell um."""
     raw_segments = data.get("segments", [])
     speaker_map = _build_speaker_map(raw_segments)
 
@@ -270,7 +270,7 @@ def transcribe(
 
 
 def save_markers(result: WhisperXResult, path: Path) -> Path:
-    """Schreibt die erzeugten Marker im transcribe-app-Marker-Format.
+    """Schreibt die erzeugten Marker im BoRT-Marker-Format.
 
     Das Format ist kompatibel zu ``load_markers``: ein JSON-Objekt mit
     ``speakers`` (ID -> Anzeigename) und ``markers`` (Intervalle).
