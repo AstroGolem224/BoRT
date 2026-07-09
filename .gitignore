@@ -1,0 +1,53 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# whisper.cpp build artifacts and models
+vendor/whisper.cpp/build/
+models/*.bin
+models/*.gguf
+
+# Test / output artifacts
+*.wav
+*.mp3
+output/
+out/
+tmp/
+
+# Coverage
+.coverage
+htmlcov/
+
+# BoRT: externe clones & Artefakte
+vendor/
+unbenannt.*
