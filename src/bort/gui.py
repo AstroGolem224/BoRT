@@ -244,6 +244,7 @@ def transcription_worker(params: TranscriptionParams, log_queue: queue.Queue) ->
         done_data = {
             "backend": params.backend,
             "audio_path": params.audio_path,
+            "marker_path": params.marker_path,
             "segments": speaker_segments,
             "speaker_map": wx_speaker_map,
             "markers": wx_markers,
@@ -284,6 +285,9 @@ class TranscriptionApp:
         self._on_backend_change(self.backend_display_var.get())
         self.log_queue: queue.Queue = queue.Queue()
         self.worker_thread: threading.Thread | None = None
+        self._audio_trace_id: str | None = None
+        # Auto-Load der Begleit-JSON auch beim manuellen Tippen/Einfügen des Pfads.
+        self.audio_var.trace_add("write", self._on_audio_var_change)
         self._poll_queue()
 
     def _build_ui(self) -> None:
@@ -786,6 +790,24 @@ class TranscriptionApp:
         if audio_path:
             self._auto_load_companion_marker(Path(audio_path))
 
+    def _on_audio_var_change(self, *_args: Any) -> None:
+        """Debounced Reaktion auf Änderungen des Audio-Pfads (auch manuelles Tippen)."""
+        if self._audio_trace_id is not None:
+            self.root.after_cancel(self._audio_trace_id)
+        self._audio_trace_id = self.root.after(300, self._debounced_audio_check)
+
+    def _debounced_audio_check(self) -> None:
+        """Prüft den aktuellen Audio-Pfad und lädt ggf. die Begleit-JSON."""
+        self._audio_trace_id = None
+        raw = self.audio_var.get().strip()
+        if not raw:
+            return
+        audio_path = Path(raw)
+        if not audio_path.is_file():
+            # Datei existiert (noch) nicht – ignorieren und weitermachen.
+            return
+        self._auto_load_companion_marker(audio_path)
+
     def _auto_load_companion_marker(self, audio_path: Path) -> None:
         """Sucht eine passende Marker-JSON zum Audio und trägt sie ein.
 
@@ -879,6 +901,17 @@ class TranscriptionApp:
         self.log_text.insert("end", f"{message}\n")
         self.log_text.configure(state="disabled")
         self.log_text.see("end")
+
+    def _log_sources(self, done_data: dict) -> None:
+        """Zeigt die verarbeiteten Quelldateien (Audio + Marker-JSON) im Log an."""
+        audio_path = done_data.get("audio_path")
+        marker_path = done_data.get("marker_path")
+        lines: list[str] = ["Verarbeitete Quellen:"]
+        if audio_path is not None:
+            lines.append(f"  • Audio:  {Path(audio_path).name}")
+        if marker_path:
+            lines.append(f"  • Marker: {Path(marker_path).name}")
+        self._log("INFO", "\n".join(lines))
 
     def _validate(self) -> TranscriptionParams | None:
         """Validiert die Eingaben und gibt Parameter zurück oder None."""
@@ -1004,6 +1037,9 @@ class TranscriptionApp:
                     message = item[1]
                     done_data = item[2] if len(item) > 2 else None
                     self._log("INFO", message)
+                    # Verarbeitete Quellen anzeigen (Audio + ggf. Marker-JSON)
+                    if done_data:
+                        self._log_sources(done_data)
                     self.run_button.configure(state="normal")
                     self.status_label.configure(
                         text="● Fertig", text_color=COLORS["success"]
