@@ -307,44 +307,41 @@ def write_outputs(
         date_dir = _date_subdir(output_dir)
         unique_base = _unique_base_name(date_dir, base_name, formats)
 
+    for fmt in formats:
+        if fmt not in FORMATS:
+            raise ValueError(f"Unbekanntes Format: {fmt}. Möglich: {list(FORMATS)}")
+
+    # Alles-oder-nichts: schlägt irgendein Schreibvorgang (Sidecar oder eines
+    # der Transkript-Formate) fehl, werden alle in diesem Aufruf bereits
+    # geschriebenen Dateien wieder gelöscht, bevor die Exception weitergereicht
+    # wird. Verhindert, dass ein Teilerfolg (z.B. TXT geschrieben, CSV
+    # scheitert) scan_pending() später als "vollständig verarbeitet" erscheint.
     written: list[Path] = []
-    for fmt in formats:
-        if fmt not in FORMATS:
-            raise ValueError(f"Unbekanntes Format: {fmt}. Möglich: {list(FORMATS)}")
-        suffix, writer = FORMATS[fmt]
-        path = date_dir / f"{unique_base}{suffix}"
-        writer(segments, path, bookmarks=bookmarks)
-        written.append(path)
+    try:
+        # Sidecar ZUERST: schlägt sie fehl, existiert noch kein Transkript,
+        # das scan_pending() fälschlich als "erledigt" einstufen könnte.
+        if review_data is not None:
+            # base_name in der Sidecar muss den TATSÄCHLICH gewählten
+            # unique_base widerspiegeln (bei Kollision z.B. "session_1"),
+            # sonst zeigt der spätere Reopen-Flow auf die falsche Datei.
+            normalized_review_data = {**review_data, "base_name": unique_base}
+            review_path = date_dir / f"{unique_base}.review.json"
+            with review_path.open("w", encoding="utf-8") as f:
+                json.dump(normalized_review_data, f, indent=2, ensure_ascii=False)
+            written.append(review_path)
 
-    # Sidecar VOR den Transkripten schreiben: schlägt sie fehl, existieren noch
-    # keine Transkript-Dateien, die scan_pending() später fälschlich als
-    # "bereits verarbeitet, aber nicht nachbearbeitbar" einstufen könnte.
-    if review_data is not None:
-        # base_name in der Sidecar muss den TATSÄCHLICH gewählten unique_base
-        # widerspiegeln (bei Kollision z.B. "session_1"), sonst zeigt der
-        # spätere Reopen-Flow auf die falsche Transkript-Datei.
-        normalized_review_data = {**review_data, "base_name": unique_base}
-        review_path = date_dir / f"{unique_base}.review.json"
-        with review_path.open("w", encoding="utf-8") as f:
-            json.dump(normalized_review_data, f, indent=2, ensure_ascii=False)
-        written.append(review_path)
-
-    for fmt in formats:
-        if fmt not in FORMATS:
-            raise ValueError(f"Unbekanntes Format: {fmt}. Möglich: {list(FORMATS)}")
-        suffix, writer = FORMATS[fmt]
-        path = date_dir / f"{unique_base}{suffix}"
-        writer(segments, path, bookmarks=bookmarks)
-        written.append(path)
+        for fmt in formats:
+            suffix, writer = FORMATS[fmt]
+            path = date_dir / f"{unique_base}{suffix}"
+            writer(segments, path, bookmarks=bookmarks)
+            written.append(path)
+    except Exception:
+        for path in written:
+            path.unlink(missing_ok=True)
+        raise
 
     return written
 ```
-
-Der `for fmt in formats:`-Block, der vorher VOR dem `if review_data is not None:`-Block stand, wird
-also nach hinten verschoben (Reihenfolge: Sidecar zuerst, dann Transkripte) — im obigen Codeblock ist
-das bereits die finale Reihenfolge; beim Einfügen in `write_outputs()` den alten, doppelten
-`for fmt in formats:`-Block (der ursprünglich vor `if review_data` stand) entfernen, sodass er nur
-noch einmal (nach dem Sidecar-Block) vorkommt.
 
 `json` muss in `src/bort/writers.py` importiert sein — am Dateianfang prüfen/ergänzen:
 
@@ -850,27 +847,32 @@ wieder entfernen.
 `_setup_worker_logging` (gui.py:104-111) ersetzen durch:
 
 ```python
-def _setup_worker_logging(log_queue: queue.Queue, verbose: bool) -> logging.Handler:
+def _setup_worker_logging(
+    log_queue: queue.Queue, verbose: bool
+) -> tuple[logging.Handler, int]:
     """Hängt einen Queue-Handler an den Root-Logger, OHNE bestehende Handler
     zu entfernen (wichtig bei mehreren Läufen hintereinander, z.B. Batch).
-    Gibt den neu hinzugefügten Handler zurück, damit der Aufrufer ihn nach
-    Lauf-Ende gezielt per `removeHandler` wieder entfernt.
+    Gibt den neu hinzugefügten Handler UND den vorherigen Root-Log-Level
+    zurück, damit der Aufrufer nach Lauf-Ende beides wiederherstellt (sonst
+    bleibt z.B. ein durch `verbose=True` gesetzter DEBUG-Level dauerhaft
+    global aktiv).
     """
     root = logging.getLogger()
+    previous_level = root.level
     handler = QueueLogHandler(log_queue)
     handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
     root.addHandler(handler)
     root.setLevel(logging.DEBUG if verbose else logging.INFO)
-    return handler
+    return handler, previous_level
 ```
 
-`transcription_worker` (gui.py:114-266) umschließt seinen bisherigen Körper mit `try/finally`, um den
-Handler garantiert wieder zu entfernen:
+`transcription_worker` (gui.py:114-266) umschließt seinen bisherigen Körper mit `try/finally`, um
+Handler und Log-Level garantiert wiederherzustellen:
 
 ```python
 def transcription_worker(params: TranscriptionParams, log_queue: queue.Queue) -> None:
     """Läuft im Hintergrund-Thread und führt die Transkription aus."""
-    handler = _setup_worker_logging(log_queue, params.verbose)
+    handler, previous_level = _setup_worker_logging(log_queue, params.verbose)
     logger = logging.getLogger(__name__)
     try:
         # --- ab hier: bisheriger Methodenkörper unverändert (Bookmarks laden,
@@ -878,12 +880,15 @@ def transcription_worker(params: TranscriptionParams, log_queue: queue.Queue) ->
         # done_data, except-Block) ---
         ...
     finally:
-        logging.getLogger().removeHandler(handler)
+        root = logging.getLogger()
+        root.removeHandler(handler)
+        root.setLevel(previous_level)
 ```
 
 (Der `try:`/`except (...)`-Block, der im Original bereits vorhanden ist, bleibt als innerer Block
-erhalten — das neue `try/finally` umschließt ihn zusätzlich von außen, entfernt also den Handler
-sowohl bei Erfolg als auch nach einer der bestehenden `except`-Zweige.)
+erhalten — das neue `try/finally` umschließt ihn zusätzlich von außen, entfernt also den Handler und
+stellt den Log-Level wieder her, sowohl bei Erfolg als auch nach einer der bestehenden
+`except`-Zweige.)
 
 - [ ] **Step 0b: Manueller Test**
 
@@ -1271,6 +1276,15 @@ def test_load_review_rejects_path_traversal_base_name(tmp_path: Path) -> None:
         load_review(review_path)
 
 
+def test_load_review_rejects_non_string_audio_path(tmp_path: Path) -> None:
+    review_path = tmp_path / "session.review.json"
+    bad = dict(VALID_DATA, audio_path=123)
+    review_path.write_text(json.dumps(bad), encoding="utf-8")
+
+    with pytest.raises(ReviewError, match="audio_path"):
+        load_review(review_path)
+
+
 def test_load_review_rejects_unknown_format(tmp_path: Path) -> None:
     audio_path = tmp_path / "session.m4a"
     audio_path.write_bytes(b"")
@@ -1348,6 +1362,8 @@ def load_review(path: Path) -> ReviewData:
             data = json.load(f)
     except json.JSONDecodeError as exc:
         raise ReviewError(f"Review-Datei ist ungültig (kein JSON): {exc}") from exc
+    except OSError as exc:
+        raise ReviewError(f"Review-Datei konnte nicht gelesen werden: {exc}") from exc
 
     if not isinstance(data, dict):
         raise ReviewError("Review-Datei ist ungültig (kein JSON-Objekt).")
@@ -1362,6 +1378,8 @@ def load_review(path: Path) -> ReviewData:
             f"(erwartet: {SUPPORTED_SCHEMA_VERSION})"
         )
 
+    if not isinstance(data["audio_path"], str) or not data["audio_path"]:
+        raise ReviewError(f"audio_path ist ungültig: {data['audio_path']!r}")
     audio_path = Path(data["audio_path"])
     if not audio_path.exists():
         raise ReviewError(f"Audio-Datei nicht mehr vorhanden: {audio_path}")
@@ -1763,64 +1781,82 @@ class BatchWindow(ctk.CTkToplevel):
                 self.log_queue.put(
                     ("batch_item_start", index, total, item.audio_path.name)
                 )
-
-                if params is None:
-                    failed += 1
-                    self.log_queue.put(
-                        ("batch_item_error", item.audio_path.name, "Ungültige Einstellungen")
+                try:
+                    outcome = self._process_one_item(item, params, index, total)
+                except Exception as exc:
+                    # Ein unerwarteter Fehler bei EINEM Item darf weder den
+                    # Rest des Batches abwürgen noch die Zählung verfälschen
+                    # (sonst meldet die Zusammenfassung fälschlich 0 Fehler,
+                    # obwohl der Batch faktisch abgebrochen wurde).
+                    logger.exception(
+                        "Unerwarteter Fehler bei Batch-Item %s", item.audio_path
                     )
-                    continue
-
-                # Erneute Prüfung direkt vor der Verarbeitung: Audio/Marker
-                # können sich seit dem Scan verändert haben (SMB-Race).
-                if not item.audio_path.exists() or not is_file_stable(item.audio_path):
-                    skipped += 1
                     self.log_queue.put(
-                        (
-                            "batch_item_skip", item.audio_path.name,
-                            "Audio nicht mehr vorhanden oder wird noch kopiert",
-                        )
+                        ("batch_item_error", item.audio_path.name, str(exc))
                     )
-                    continue
-                if item.marker_path is not None:
-                    if not item.marker_path.exists() or not is_file_stable(
-                        item.marker_path
-                    ):
-                        skipped += 1
-                        self.log_queue.put(
-                            (
-                                "batch_item_skip", item.audio_path.name,
-                                "Marker-Datei nicht mehr vorhanden oder wird noch kopiert",
-                            )
-                        )
-                        continue
-                    try:
-                        load_markers(item.marker_path)
-                    except MarkerError as exc:
-                        self.log_queue.put(
-                            (
-                                "batch_item_skip", item.audio_path.name,
-                                f"Marker-Datei ungültig geworden: {exc}",
-                            )
-                        )
-                        skipped += 1
-                        continue
-
-                item_queue: queue.Queue = queue.Queue()
-                transcription_worker(params, item_queue)
-                outcome_ok, outcome_msg = self._drain_item_queue(item_queue, index, total)
-                if outcome_ok:
+                    outcome = "error"
+                if outcome == "ok":
                     succeeded += 1
-                else:
+                elif outcome == "error":
                     failed += 1
-                self.log_queue.put(
-                    ("batch_item_done", item.audio_path.name, outcome_msg)
-                )
+                else:
+                    skipped += 1
         finally:
             # Garantiert IMMER gesendet, auch bei einer unerwarteten Exception
             # oben — sonst bleibt das Job-Lock (siehe _poll_queue) dauerhaft
             # belegt und die GUI ist gesperrt.
             self.log_queue.put(("batch_finished", succeeded, failed, skipped))
+
+    def _process_one_item(
+        self, item: PendingItem, params: object, index: int, total: int
+    ) -> str:
+        """Verarbeitet ein Item, gibt "ok"/"error"/"skip" zurück.
+
+        Wirft NUR bei wirklich unerwarteten Fehlern (Aufrufer fängt das ab) —
+        erwartete Fälle (fehlende Params, instabile/fehlende Dateien, defekte
+        Marker) werden hier selbst als "error"/"skip" behandelt.
+        """
+        if params is None:
+            self.log_queue.put(
+                ("batch_item_error", item.audio_path.name, "Ungültige Einstellungen")
+            )
+            return "error"
+
+        # Erneute Prüfung direkt vor der Verarbeitung: Audio/Marker können
+        # sich seit dem Scan verändert haben (SMB-Race).
+        if not item.audio_path.exists() or not is_file_stable(item.audio_path):
+            self.log_queue.put(
+                (
+                    "batch_item_skip", item.audio_path.name,
+                    "Audio nicht mehr vorhanden oder wird noch kopiert",
+                )
+            )
+            return "skip"
+        if item.marker_path is not None:
+            if not item.marker_path.exists() or not is_file_stable(item.marker_path):
+                self.log_queue.put(
+                    (
+                        "batch_item_skip", item.audio_path.name,
+                        "Marker-Datei nicht mehr vorhanden oder wird noch kopiert",
+                    )
+                )
+                return "skip"
+            try:
+                load_markers(item.marker_path)
+            except MarkerError as exc:
+                self.log_queue.put(
+                    (
+                        "batch_item_skip", item.audio_path.name,
+                        f"Marker-Datei ungültig geworden: {exc}",
+                    )
+                )
+                return "skip"
+
+        item_queue: queue.Queue = queue.Queue()
+        transcription_worker(params, item_queue)
+        outcome_ok, outcome_msg = self._drain_item_queue(item_queue, index, total)
+        self.log_queue.put(("batch_item_done", item.audio_path.name, outcome_msg))
+        return "ok" if outcome_ok else "error"
 
     def _drain_item_queue(
         self, item_queue: queue.Queue, index: int, total: int

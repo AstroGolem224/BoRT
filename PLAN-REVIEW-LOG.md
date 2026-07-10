@@ -127,3 +127,31 @@ Alle Punkte übernommen, keine Ablehnung in dieser Runde:
   unmittelbar vor jedem Item, komplette Schleife in try/finally gekapselt (garantiert
   `batch_finished` und damit Lock-Freigabe auch bei unerwarteter Exception). `_on_close` blockt jetzt
   auch während eines laufenden Scans, nicht nur während eines Batch-Laufs.
+
+## Round 5 — Codex (MAX_ROUNDS erreicht)
+- `write_outputs()`-Codeblock enthielt weiterhin zwei Transkript-Schleifen (Einfüge-/Entfern-Anweisung statt sauberem Endzustand) — widersprach der eigenen "Sidecar zuerst"-Aussage.
+- Sidecar-zuerst allein schützt nicht vor Teilerfolg bei mehreren Formaten (TXT ok, CSV scheitert) — scan_pending() hätte die Aufnahme trotzdem als erledigt gesehen.
+- `_run_batch()`-try/finally zählte eine unerwartete Exception nicht als Fehler — Zusammenfassung hätte fälschlich 0 Fehler gemeldet.
+- `load_review()`: `Path(data["audio_path"])` konnte bei Nicht-String-Wert TypeError werfen; Datei-Lesefehler (OSError) wurden nicht in ReviewError übersetzt.
+- Logger-Fix stellte Handler wieder her, aber nicht den vorherigen Root-Log-Level — verbose-Lauf hätte Logging global dauerhaft verändert.
+
+VERDICT: REVISE (5. Runde — MAX_ROUNDS erreicht, Loop endet hier)
+
+### Claude's response
+Alle 5 Punkte übernommen, keine Ablehnung:
+- `write_outputs()` final auf EINEN sauberen Codeblock reduziert: Format-Validierung vorab, dann
+  Sidecar+alle Transkript-Writer in einem try-Block, bei JEDER Exception werden alle in diesem Aufruf
+  bereits geschriebenen Dateien wieder gelöscht (alles-oder-nichts, deckt auch Teilerfolg bei
+  mehreren Formaten ab, nicht nur Sidecar-vs-Transkript).
+- `_run_batch`: pro Item in `_process_one_item()` gekapselt, äußeres try/except pro Item zählt eine
+  unerwartete Exception jetzt explizit als "error" statt sie unter den Tisch fallen zu lassen.
+- `load_review()`: `audio_path` wird vor `Path(...)`-Konvertierung als nicht-leerer String validiert,
+  OSError beim Datei-Lesen wird in ReviewError übersetzt. Neuer Test für Nicht-String-audio_path.
+- Logger-Fix: `_setup_worker_logging` gibt jetzt zusätzlich den vorherigen Root-Log-Level zurück,
+  `transcription_worker`s finally-Block stellt ihn wieder her.
+
+**Abschluss:** MAX_ROUNDS (5) erreicht mit VERDICT: REVISE. Keine der 5 Runden endete mit
+VERDICT: APPROVED — das ist kein Deadlock durch Meinungsverschiedenheit (Claude stimmte in jeder
+Runde allen Kernfunden zu), sondern schlicht daran, dass die Aufgabe (Batch-Verarbeitung +
+nachträgliche Sprecher-Bearbeitung, thread-sicher, mit Datei-Race-Absicherung) genug Fläche bietet,
+dass Codex bei jeder Version noch etwas Neues fand. Nutzer entscheidet nächsten Schritt.
