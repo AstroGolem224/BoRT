@@ -1,195 +1,115 @@
-# Plan Review Log: BoR ↔ BoRT Handoff-Automatisierung (Batch-Scan)
-Act 1 (grill) complete — plan locked with the user (via prior brainstorming session, not a fresh Act-1 interview). MAX_ROUNDS=5.
+# Plan Review Log: BoRT UI-Redesign → Neumorphism (pywebview)
+Act 1 (grill) complete — plan locked with the user via interactive interview (render approach,
+window structure, accent colour, preview timing, packaging model, waveform all decided by the user;
+pywebview feasibility + the GDK_BACKEND=x11 black-window workaround empirically verified with a real
+screenshotted probe window before locking). MAX_ROUNDS=5.
 Reviewer model: gpt-5.6-terra (from ~/.codex/config.toml, unpinned) — codex-cli 0.144.1.
 
+(Previous content of this file — the batch-handoff review log — is preserved in git history at the
+commits from 2026-07-09/07-10; this file is reused for the new grill cycle per the skill convention.)
+
 ## Round 1 — Codex
-- Tk-Thread-Verstoß in `_run_batch()` (Tk-Zugriff im Worker-Thread)
-- Kein Job-Lock zwischen Haupt-Run und Batch-Run (GPU-Konflikt möglich)
-- Root-Logger wird pro Lauf zerstört (`root.handlers.clear()`)
-- `_drain_item_queue()` verwirft log/progress-Nachrichten
-- „Bereits verarbeitet"-Check (`rglob(f"{stem}.*")`) zu locker — akzeptiert auch `<stem>.markers.json`
-- Fehlschlag nach Auto-Marker-Schreiben wird fälschlich als Erfolg gezählt (Kernbug, direkte Folge des vorigen Punkts)
-- Namenskollisionen zwischen Dateien gleichen Stems, unterschiedlicher Endung
-- SMB-Teilkopien können verarbeitet werden (keine Stabilitätsprüfung)
-- TOCTOU zwischen Scan und Verarbeitung
-- Doppel-Verarbeitung bei zweitem Klick auf „Alle verarbeiten" ohne Rescan
-- Fenster-Schließen während laufendem Batch nicht sicher
-- Speaker-Manager-Nachbearbeitung für Batch+whisperX nicht erreichbar
-- Auto-Marker werden bei Wiederholungsläufen überschrieben
-- Irreführende Abschlusszahl („N Dateien" ohne Erfolg/Fehler-Aufschlüsselung)
-- Fehlende Tests für die kritischen Randfälle
-- SMB-Doku ohne Sicherheitsvorgaben (Gastzugriff, ACLs)
+- gui.py NICHT view-only: besitzt TranscriptionParams, transcription_worker, Logging-Lifecycle, Validierung, Config-Persistenz, Job-Lock; batch_window importiert davon. Löschen bricht Batch.
+- speaker_manager.py ebenfalls nicht view-only: AudioPlayer + kompletter Rename/Rewrite-Algorithmus.
+- js_api-Methoden laufen auf Threads, nicht thread-safe — Boolean-Job-Lock unzureichend für gleichzeitige start_transcription/process_all + Config-Writes.
+- evaluate_js aus Worker-Thread ohne GTK-Mainloop-Dispatch/Readiness-Gate/Cancel-on-close/Serialisierung.
+- Interpoliertes evaluate_js("onTranscribeDone(...)") bricht bei Quotes/Newlines + XSS + Dataclasses nicht JSON-serialisierbar.
+- Gleiche XSS-Gefahr bei Logs/Dateinamen/Sprechernamen/Review-Text/Batch-Status via innerHTML.
+- http_server=True redundant; CSP/Threat-Model fehlt.
+- Von JS gelieferte Pfade + Playback-Bounds nicht serverseitig validiert.
+- create_file_dialog liefert tuple|None (nicht str); GTK-Filter-Syntax != Tk-Tupel.
+- XWayland-Workaround unvollständig: Env-Vars müssen VOR gi/webview-Import gesetzt sein; Launcher heißt run-gui.sh nicht launch.sh; kein bort.desktop im Repo.
+- Tk-XCB-LD_PRELOAD-Shim für WebKit-Launcher unbegründet/schädlich.
+- PyGObject in .venv nicht garantiert durch System-Install; Python-3.14-Kompatibilität unverifiziert.
+- Entry-Points-Regression (uv run python -m bort vs __main__ → bort.gui vs bort-gui-Script).
+- Statische web/-Assets nicht als Package-Data deklariert → nicht-editable-Install verliert sie.
+- Batch-Vertrag (GUI-Params, Pre-Item-Stabilität, Per-Item-Accounting, Lock-Freigabe) explizit erhalten + testen.
+- Speaker-Edit unterspezifiziert (bookmarks/markers/output-location/basename/formats/overwrite); opake Review-ID vorschlagen.
+- Playback-State-Machine-Details (Stop-Toggle, Reset nach natürlichem Ende, Serialisierung).
+- Vorschau ohne Scale/Error-Policy für lange Aufnahmen; virtualisieren, bei Job-Start leeren.
+- Batch ohne definiertes Verhalten für Stale-Scan/Doppelklick/Close/Cancel-während-Subprozess.
+- Kein Implementierungs-Testplan für die riskantesten Behauptungen.
+- Simplere Route: erst Controller/Services extrahieren, alte GUI weiterlaufen lassen, dann pywebview hinter Launcher-Flag bis On-Target-Smokes bestehen.
 
 VERDICT: REVISE
 
 ### Claude's response
-Übernommen: Thread-Sicherheit (Params im Main-Thread bauen), Job-Lock, benannter statt Root-Logger,
-vollständiges Log-Forwarding, korrekter Verarbeitet-Check (echte Transkript-Endungen, markers.json
-ausgeschlossen), Stabilitäts-Check gegen Teilkopien + Re-Check vor Verarbeitung, Pending-Liste nach
-Lauf leeren (kein Doppel-Run ohne Rescan), sicheres Schließen mit Abbrechen-Button, getrennte
-Erfolg/Fehler/Übersprungen-Zählung, zusätzliche Tests, SMB-Doku mit least-privilege-Hinweisen.
+Kritik zu ~95% berechtigt und stark. Vor der Revision zwei faktische Punkte empirisch geprüft:
+1. BoRT-venv ist Python 3.14.6 (mein erster Smoke-Test war 3.12!). NEU getestet: pywebview+pycairo+
+   PyGObject+WebKit2 4.1 importieren+laufen auf 3.14.6 → kein Showstopper.
+2. Launcher-Realität: launch.sh (PyInstaller+Tk-Shim) UND run-gui.sh (venv) existieren; bort.desktop
+   existiert unter ~/Desktop (AUSSERHALB Repo → Codex' read-only Scan sah sie nicht). __main__→bort.gui.
 
-Abgelehnt (dokumentiert statt gebaut): Namenskollision gleicher Stem unterschiedlicher Audio-Endung
-(unwahrscheinlich durch BoRs Datums-Zeit-Namenskonvention) — als Risiko vermerkt statt
-Hash-Completion-Record gebaut. Persistenter Speaker-Review-Workflow für Batch+whisperX — echte Lücke,
-aber neues Feature außerhalb des Scopes, als bekannte Einschränkung dokumentiert. Auto-Marker-
-Überschreibung bei Wiederholungsläufen — durch strengeren Verarbeitet-Check jetzt seltener, kein
-zusätzlicher Schutz gebaut.
+Übernommen (fast alles):
+- NEUE Phase 0 „Controller/Service-Extraktion" vorangestellt: jobs.py/playback.py/speaker_edit.py/
+  batch.py aus den View-Dateien ziehen, ALTE Tk-UI darauf umstellen + weiterlaufen lassen, 46 Tests
+  grün halten, neue Controller-Unit-Tests. De-risking-Fundament (= Codex' „simplere Route").
+- 5 Cross-cutting Design-Regeln fixiert: echter threading.Lock + strukturierte busy-Fehler;
+  GLib.idle_add-Dispatch nach window.events.loaded-Gate; json.dumps + textContent überall, nie
+  innerHTML mit Backend-Daten; autoritativer State in Python via opake Job-/Review-IDs +
+  serverseitige Pfad/Bounds-Validierung; strikte CSP, kein http_server=True.
+- create_file_dialog tuple|None + GTK-Filter normalisiert/getestet; Env-Vars VOR Python im Launcher;
+  Tk-XCB-Shim aus Webui-Launcher entfernt; Entry-Points atomar umgestellt; web-Assets als Package-Data
+  via importlib.resources; Vorschau virtualisiert für ~450 Segmente + bei Job-Start geleert;
+  Batch-/Playback-/Speaker-Edit-Semantik verbatim aus Phase 0 übernommen; On-Target-Smoke-Gate vor
+  Alt-Code-Löschung.
+- Verifizierte Rahmenbedingungen als eigener Abschnitt in PLAN.md dokumentiert.
+
+Abgelehnt: Codex' Alternativ-Stack „direkte GTK/libadwaita-CSS-UI ohne JS-Bridge" — trifft den
+gewünschten Neumorphism-CSS-Look weniger genau, anderer Tech-Stack als vom Nutzer gewählt. Als
+Out-of-scope dokumentiert.
 
 ## Round 2 — Codex
-- Detaillierter Task-Plan (Code) wurde nicht nachgezogen, nur PLAN.md-Zusammenfassung — Fix: vor Implementierung nachholen.
-- Logger-Isolation unterspezifiziert/wirkungslos (bort.worker fängt keine anderen Logger ab).
-- Einzelner mtime-Schwellwert (15s) reicht nicht als Stabilitätsnachweis gegen SMB-Teilkopien.
-- Stem-Kollision bleibt Datenverlust-Bug, nicht akzeptable Seltenheit.
-- Speaker-Manager-Lücke: Dokumentieren allein erfüllt das Ziel (manuelle Nachbearbeitung bleibt möglich) nicht.
-- Marker-Recheck vor Verarbeitung nur Existenzprüfung, nicht vollständiges Neu-Parsen.
-- Job-Lock braucht explizite Ownership/Cleanup-Regeln für alle Beendigungspfade (Validierungsfehler, Exception, Abbruch, Fenster-Schließen).
-- Tests fehlen weiterhin für: Stem-Kollision, Zwei-Sample-Stabilitätscheck, Lock-Freigabe auf jedem Pfad, Speaker-Review-Handoff.
+Bestätigt: Controller-First, echte Locks, Mainloop-Dispatch, JSON/DOM-Regeln, Package-Data, phasierte
+Launch-Migration, Tk-Shim-Entfernung, On-Target-Gates = substanzielle Verbesserungen. Verbleibend:
+- _build_params noch als „UI-unabhängig" bezeichnet, liest aber CTk-Vars + öffnet Tk-Dialoge → typisiertes TranscriptionSettings-Input + strukturiertes Ergebnis.
+- Phase 0 ohne Feature-Parität-Checkliste (backend/model/language/task/min-max-speakers/no-diarize/auto-markers/formats/keep-wav/verbose/companion-auto-load/config/output-open) + Tests.
+- load_review_data(path) widerspricht Opaque-ID-Regel (JS kann beliebigen Pfad senden) → pick_review_file() lädt+registriert in Python, nur review_id zurück.
+- Strikte CSP kollidiert mit evaluate_js (eval-basiert) → window.run_js nutzen oder minimale CSP-Ausnahme testen/dokumentieren, nie still unsafe-eval.
+- JS-Readiness-Gate fehlt: muss window.pywebviewready abwarten vor pywebview.api-Aufruf + getakteter Initial-State-Handshake.
+- Progress-Dispatch braucht gebündelte/beschränkte Queue (jüngstes Progress pro Job, Logs bounded, Events inaktiver/geschlossener Jobs verwerfen).
+- Native GTK-Dialoge aus js_api-Worker-Threads brauchen GUI-Thread-Ausführungsvertrag + Smoke.
+- Phase 1 `python -m bort --ui=web` unlaunchbar (bestehendes __main__ behandelt es als CLI) → --ui=web-Dispatch in Phase 1 ODER python -m bort.app direkt.
+- Phase 3: `bort`-CLI-Vertrag nicht anfassen — nur GUI-Entry-Points umziehen.
+- importlib.resources braucht as_file-Lifetime für ganze Fensterlebensdauer.
+- Speaker-Rename braucht ID-basierten Vertrag + Tests (leer/Duplikat/fehlend/wiederholt).
+- „46 Tests grün" nicht genug → neue Controller-Tests + manueller Phase-0-Tk-Regressionslauf vor Phase 1.
 
 VERDICT: REVISE
 
 ### Claude's response
-Nutzer-Entscheidung eingeholt zur Speaker-Manager-Frage: nachträgliche Bearbeitung jederzeit gewünscht
-(nicht nur direkt nach Lauf). Neuer Baustein entworfen: Review-Sidecar (`{unique_base}.review.json`,
-geschrieben von `write_outputs()`) + Reopen-Flow, der die bestehende `SpeakerManagerWindow`
-unverändert wiederverwendet. Batch öffnet Speaker-Manager nicht mehr automatisch (bleibt
-"weglaufen"-fähig), schreibt aber die Sidecar für jede whisperX-Datei.
-
-Übernommen: Logger-Fix (gezieltes removeHandler statt handlers.clear(), Propagation nutzen statt
-neuer Logger-Namespace), Zwei-Sample-Stabilitätscheck (Größe+mtime, Abstand 2s), vollständiges
-Marker-Reparsen vor Verarbeitung, zentrale Job-Lock-Freigabe in einer einzigen
-Main-Thread-Completion-Routine für alle Beendigungspfade, zusätzliche Tests wie gefordert.
-
-Abgelehnt (mit Begründung): volle Hash-basierte Completion-Identität gegen Stem-Kollision — würde
-`base_name = audio_path.stem`-Konvention in `writers.py` ändern, betrifft CLI und Einzel-Lauf-Flow,
-keine Batch-lokale Änderung mehr. Stattdessen Mini-Absicherung ergänzt: Output zählt nur als Nachweis,
-wenn seine mtime nicht älter ist als die des Audios — deckt den wahrscheinlichen Fall (Aufnahme erneut
-committed) ab, nicht aber zwei unabhängige Aufnahmen mit zufällig identischem Stem in derselben Minute
-(dokumentiertes Restrisiko).
+Alle 12 Punkte übernommen, keine Ablehnung — durchweg berechtigte Verfeinerungen:
+- Cross-cutting Regeln erweitert: Regel 2 (run_js statt evaluate_js + coalesced/bounded Queue + Events
+  inaktiver Jobs verwerfen), Regel 4 (keine pfad-annehmende JS-Methode; pick_review_file lädt+registriert),
+  Regel 5 (CSP-vs-eval explizit: run_js oder dokumentierte Ausnahme, nie still unsafe-eval), Regel 6
+  (beidseitiges Readiness-Gate: window.events.loaded + window.pywebviewready + Handshake), Regel 7 (GTK-
+  Dialoge auf Mainloop).
+- Phase 0: build_params als reine Funktion (TranscriptionSettings-Input, strukturiertes Ergebnis, keine
+  Dialoge); Feature-Parität-Checkliste mit Akzeptanztests für jede Option + Persistenz; Phase-0-Gate =
+  manueller Tk-Regressionslauf vor Phase 1.
+- Phase 1: pick_review_file() statt load_review_data(path); Launcher ruft `uv run python -m bort.app`
+  direkt (nicht --ui=web); importlib.resources.as_file für ganze Fensterlebensdauer offen.
+- Phase 2: apply_speaker_rename akzeptiert nur {speaker_id: new_name}, Tests für leer/Duplikat/fehlend/
+  wiederholt.
+- Phase 3: `bort = bort.cli:main` bleibt unverändert, nur bort-gui + argumentloses __main__ → app.main().
 
 ## Round 3 — Codex
-- Task-Plan (Code) wurde erneut nicht aktualisiert — nur PLAN.md, wiederholter Kernvorwurf.
-- Review-Sidecar-Typ-Mismatch: rohe `Segment`s gespeichert, `SpeakerManagerWindow` erwartet `SpeakerSegment`s.
-- Sidecar fehlte `audio_path` (für Playback zwingend nötig).
-- `write_outputs()` würde beim Reopen `_1`-Duplikate statt Overwrite erzeugen (zusätzlich: bereits bestehender Bug beim Live-Rename direkt nach einem Lauf, unabhängig vom Reopen-Feature).
-- Keine Atomizitätsregel: Sidecar-Schreibfehler nach Transkript-Erfolg würde Aufnahme als "verarbeitet, aber nicht nachbearbeitbar" hinterlassen.
-- Kein Schema/keine Validierung für die Sidecar-Datei.
-- Widersprüchliche Altlasten in PLAN.md (alte 15s-Schwelle, alte "nicht erreichbar"-Aussage standen noch neben den neuen, ersetzenden Entscheidungen).
-- Fehlende Tests für Sidecar/Reopen: `_1`-Namen, Wiederöffnung, fehlendes Audio, beschädigte Sidecar, Exportfehler.
+Plan schließt die materiellen Punkte beider Vorrunden. Phase 0 trennt Controller-Verträge sauber von
+Tk-Widgets, erhält CLI, staged Launcher-Migration, spezifiziert die zuvor fehlenden Bridge-/State-/
+Security-/Packaging-/Regressionstest-Grenzen. Zwei Punkte als Akzeptanzkriterien (kein Plan-Revise nötig):
+- GTK-Dialog-Mainloop-Handoff darf nie warten, während der Controller-/Config-Lock gehalten wird (sonst
+  Deadlock des js_api-Request-Threads).
+- run_js-Pushes über EINEN festen JS-Dispatcher mit JSON als einzigem variablem Input, keine pro-Call-Site
+  zusammengebauten Snippets.
+Phase-0-Parität-Gate + Phase-1/2-On-Target-Smoke-Gates sind adäquate Absicherung.
 
-VERDICT: REVISE
-
-### Claude's response
-PLAN.md komplett neu geschrieben (Endzustand statt Patch-Verlauf, Widersprüche entfernt — Verlauf lebt
-ausschließlich in dieser Log-Datei). Zusätzlich JETZT den detaillierten Task-Plan
-(docs/superpowers/plans/2026-07-09-batch-handoff-automation.md) vollständig überarbeitet und mit
-echtem Code synchronisiert:
-
-Übernommen: Sidecar speichert `SpeakerSegment`-kompatible Dicts (nicht rohe Segment), `audio_path`
-im Schema ergänzt und beim Reopen auf Existenz geprüft, `write_outputs()` bekommt `overwrite`- und
-`review_data`-Parameter (Task 2) — behebt zusätzlich den vorbestehenden `_1`-Duplikat-Bug in
-`SpeakerManagerWindow._on_apply` (Task 7), Sidecar-Schreiben ist Teil desselben `write_outputs()`-
-Aufrufs wie die Transkripte (Atomizität über den bestehenden Fehlerpfad in `transcription_worker`,
-keine neue Infrastruktur), versioniertes Schema + `ReviewError`-Validierung in neuem Modul
-`speaker_review.py` (Task 8) mit vollständiger Testabdeckung (fehlende Datei, ungültiges JSON,
-fehlendes Pflichtfeld, falsche Version, fehlendes Audio). Neue Tests für `_1`-Vermeidung beim
-Overwrite (Task 2), Sidecar-Ausschluss aus `scan_pending` und mtime-Schutz gegen veraltete Outputs
-(Task 3).
-
-Keine Ablehnungen in dieser Runde — alle Punkte waren berechtigt und wurden übernommen.
-
-## Round 4 — Codex
-- Logger-Fix (Task 5 Text) war nie als konkreter Code-/Test-Schritt im Task-Plan verankert.
-- Review-Sidecar behält bei `_1`-Namenskollision fälschlich den alten `base_name` — Reopen würde falsche Datei überschreiben.
-- Behauptete Atomizität stimmte nicht: Transkripte wurden vor der Sidecar geschrieben.
-- `load_review()` würde bei falschen/fehlenden verschachtelten Feldern rohe KeyError/TypeError werfen statt ReviewError.
-- Path-Traversal über manipulierten `base_name` in der Sidecar möglich (Schreiben außerhalb des Zielordners).
-- Stabilitäts-Schutz endete nach dem Scan — Audio/Marker konnten sich vor der eigentlichen Verarbeitung noch ändern.
-- Marker-Dateien wurden nie auf Kopierstabilität geprüft, nur Audio.
-- `_run_batch()` hatte kein äußeres try/finally — eine Exception hätte das Job-Lock dauerhaft belegt.
-- Fenster-Schließen während eines laufenden SCANS (nicht nur Batch-Lauf) war ungeschützt.
-- Fehlende Tests für all diese Fälle.
-
-VERDICT: REVISE
+VERDICT: APPROVED
 
 ### Claude's response
-Alle Punkte übernommen, keine Ablehnung in dieser Runde:
-- Task 5: `_setup_worker_logging`/`transcription_worker` Handler-Lebenszyklus jetzt als konkreter
-  Code-Schritt (Step 0/0b) mit Rückgabewert + try/finally-Teardown.
-- Task 2: Sidecar wird VOR den Transkripten geschrieben (Atomizität), `base_name` in der Sidecar auf
-  den tatsächlich gewählten `unique_base` normalisiert; 2 neue Tests (Kollisionsfall,
-  Schreibfehler-verhindert-Transkript).
-- Task 8: `load_review()` validiert `base_name` (kein Pfadtrenner/'..') und `formats` (gegen
-  `writers.FORMATS`-Whitelist) explizit, wrapped die gesamte verschachtelte Rekonstruktion in
-  try/except → einheitlich `ReviewError`; 3 neue Tests (malformed nested, path traversal, unknown
-  format).
-- Task 10 (`BatchWindow._run_batch`): erneuter Existenz- UND Stabilitäts-Check (Audio + Marker)
-  unmittelbar vor jedem Item, komplette Schleife in try/finally gekapselt (garantiert
-  `batch_finished` und damit Lock-Freigabe auch bei unerwarteter Exception). `_on_close` blockt jetzt
-  auch während eines laufenden Scans, nicht nur während eines Batch-Laufs.
+Beide Akzeptanzkriterien trotzdem eingefaltet (Cross-cutting Regel 7 Deadlock-Vermeidung: Lock vor Dialog
+freigeben; neue Regel 8: ein fester __bortDispatch(<json>)-Dispatcher). Plan nach 3 Runden APPROVED.
 
-## Round 5 — Codex (MAX_ROUNDS erreicht)
-- `write_outputs()`-Codeblock enthielt weiterhin zwei Transkript-Schleifen (Einfüge-/Entfern-Anweisung statt sauberem Endzustand) — widersprach der eigenen "Sidecar zuerst"-Aussage.
-- Sidecar-zuerst allein schützt nicht vor Teilerfolg bei mehreren Formaten (TXT ok, CSV scheitert) — scan_pending() hätte die Aufnahme trotzdem als erledigt gesehen.
-- `_run_batch()`-try/finally zählte eine unerwartete Exception nicht als Fehler — Zusammenfassung hätte fälschlich 0 Fehler gemeldet.
-- `load_review()`: `Path(data["audio_path"])` konnte bei Nicht-String-Wert TypeError werfen; Datei-Lesefehler (OSError) wurden nicht in ReviewError übersetzt.
-- Logger-Fix stellte Handler wieder her, aber nicht den vorherigen Root-Log-Level — verbose-Lauf hätte Logging global dauerhaft verändert.
-
-VERDICT: REVISE (5. Runde — MAX_ROUNDS erreicht, Loop endet hier)
-
-### Claude's response
-Alle 5 Punkte übernommen, keine Ablehnung:
-- `write_outputs()` final auf EINEN sauberen Codeblock reduziert: Format-Validierung vorab, dann
-  Sidecar+alle Transkript-Writer in einem try-Block, bei JEDER Exception werden alle in diesem Aufruf
-  bereits geschriebenen Dateien wieder gelöscht (alles-oder-nichts, deckt auch Teilerfolg bei
-  mehreren Formaten ab, nicht nur Sidecar-vs-Transkript).
-- `_run_batch`: pro Item in `_process_one_item()` gekapselt, äußeres try/except pro Item zählt eine
-  unerwartete Exception jetzt explizit als "error" statt sie unter den Tisch fallen zu lassen.
-- `load_review()`: `audio_path` wird vor `Path(...)`-Konvertierung als nicht-leerer String validiert,
-  OSError beim Datei-Lesen wird in ReviewError übersetzt. Neuer Test für Nicht-String-audio_path.
-- Logger-Fix: `_setup_worker_logging` gibt jetzt zusätzlich den vorherigen Root-Log-Level zurück,
-  `transcription_worker`s finally-Block stellt ihn wieder her.
-
-**Abschluss:** MAX_ROUNDS (5) erreicht mit VERDICT: REVISE. Keine der 5 Runden endete mit
-VERDICT: APPROVED — das ist kein Deadlock durch Meinungsverschiedenheit (Claude stimmte in jeder
-Runde allen Kernfunden zu), sondern schlicht daran, dass die Aufgabe (Batch-Verarbeitung +
-nachträgliche Sprecher-Bearbeitung, thread-sicher, mit Datei-Race-Absicherung) genug Fläche bietet,
-dass Codex bei jeder Version noch etwas Neues fand. Nutzer entscheidet nächsten Schritt.
-
-## Act 3 — Build
-
-### Round 1 — Codex build (full write access)
-Implementierte alle 12 Tasks aus dem Task-Plan: markers.py-Extraktion, writers.py
-overwrite/review_data/Atomizität, batch.py (scan_pending/is_file_stable), gui.py
-(_build_params/Job-Lock/Sidecar-Erzeugung/Logger-Fix/Reopen-Button/Batch-Button),
-speaker_manager.py (overwrite+Sidecar-Refresh), speaker_review.py (Loader+Validierung),
-batch_window.py (Batch-Dialog), HANDOVER.md-Doku. Keine Commits erstellt (wie angewiesen).
-Bericht: 46/46 Tests grün, Import-Check ok, keine Abweichungen vom Spec.
-
-### Claude's Verifikation (Runde 1)
-Unabhängig nachvollzogen: `git status`/`git diff` gelesen (alle Kern-Dateien: writers.py, gui.py,
-speaker_manager.py, batch.py, speaker_review.py, batch_window.py) — Logik deckt sich exakt mit dem
-Task-Plan (Sidecar-vor-Transkript-Reihenfolge, Alles-oder-nichts-Cleanup, base_name-Normalisierung,
-Job-Lock-Acquire/Release, Re-Stabilitäts-Check pro Item, try/finally in _run_batch, Path-Traversal-
-Validierung in load_review). `python -m pytest -v` selbst ausgeführt: 46/46 PASS, bestätigt.
-
-**Aber:** `ruff check` (Projekt hat eigenes ruff-Setup, pyproject.toml) zeigte 210 Fehler gegenüber
-202 Baseline-Fehlern vor dem Build — `batch_window.py` allein enthielt ~92 E702
-(Semikolon-Statements)/E501 (Zeile-zu-lang)-Verstöße, fast so viele wie der GESAMTE Rest der
-bestehenden Codebase zusammen. Dichter, schwer lesbarer Stil, passte nicht zum Rest des Projekts.
-Kein Blocker für Korrektheit, aber ein echtes Stil-/Wartbarkeits-Problem für ein Tool, das der Nutzer
-von Hand weiterpflegt.
-
-### Round 2 — Codex fix (same session, reformat only)
-Angefordert: reine Neuformatierung der von Runde 1 berührten/erstellten Dateien auf normalen
-Python-Stil (kein Logik-Change). Bericht: alle 46 Tests weiterhin PASS, `ruff check` auf den
-betroffenen Dateien "All checks passed!".
-
-### Claude's Verifikation (Runde 2)
-Unabhängig nachvollzogen: `python -m pytest -q` → 46/46 PASS. `ruff check` auf allen geänderten/neuen
-Dateien selbst ausgeführt → "All checks passed!", bestätigt. `git diff --stat` zeigt reine
-Zeilenumbruch-Änderungen (deutlich mehr Zeilen durch Multi-Line-Formatierung, kein Logik-Drift beim
-Gegenlesen von batch_window.py). Fix-Runden verbraucht: 1 von MAX_FIX_ROUNDS=2.
-
-**Ergebnis:** Build + 1 Fix-Runde reichten aus. Kein Takeover durch Claude nötig. Bereit für
-Mensch-Freigabe vor Commit.
+**Abschluss Act 2:** Konvergiert bei VERDICT: APPROVED in Runde 3 (von 5 max). Runde 1 deckte den
+Kern-Denkfehler auf (View-Dateien enthalten Nicht-View-Logik → Controller-First-Phasierung), Runde 2
+schärfte Bridge-/Security-/Entry-Point-Details, Runde 3 nur noch zwei Akzeptanzkriterien. Nutzer-Sign-off
+ausstehend.
