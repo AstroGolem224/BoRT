@@ -155,3 +155,41 @@ VERDICT: APPROVED — das ist kein Deadlock durch Meinungsverschiedenheit (Claud
 Runde allen Kernfunden zu), sondern schlicht daran, dass die Aufgabe (Batch-Verarbeitung +
 nachträgliche Sprecher-Bearbeitung, thread-sicher, mit Datei-Race-Absicherung) genug Fläche bietet,
 dass Codex bei jeder Version noch etwas Neues fand. Nutzer entscheidet nächsten Schritt.
+
+## Act 3 — Build
+
+### Round 1 — Codex build (full write access)
+Implementierte alle 12 Tasks aus dem Task-Plan: markers.py-Extraktion, writers.py
+overwrite/review_data/Atomizität, batch.py (scan_pending/is_file_stable), gui.py
+(_build_params/Job-Lock/Sidecar-Erzeugung/Logger-Fix/Reopen-Button/Batch-Button),
+speaker_manager.py (overwrite+Sidecar-Refresh), speaker_review.py (Loader+Validierung),
+batch_window.py (Batch-Dialog), HANDOVER.md-Doku. Keine Commits erstellt (wie angewiesen).
+Bericht: 46/46 Tests grün, Import-Check ok, keine Abweichungen vom Spec.
+
+### Claude's Verifikation (Runde 1)
+Unabhängig nachvollzogen: `git status`/`git diff` gelesen (alle Kern-Dateien: writers.py, gui.py,
+speaker_manager.py, batch.py, speaker_review.py, batch_window.py) — Logik deckt sich exakt mit dem
+Task-Plan (Sidecar-vor-Transkript-Reihenfolge, Alles-oder-nichts-Cleanup, base_name-Normalisierung,
+Job-Lock-Acquire/Release, Re-Stabilitäts-Check pro Item, try/finally in _run_batch, Path-Traversal-
+Validierung in load_review). `python -m pytest -v` selbst ausgeführt: 46/46 PASS, bestätigt.
+
+**Aber:** `ruff check` (Projekt hat eigenes ruff-Setup, pyproject.toml) zeigte 210 Fehler gegenüber
+202 Baseline-Fehlern vor dem Build — `batch_window.py` allein enthielt ~92 E702
+(Semikolon-Statements)/E501 (Zeile-zu-lang)-Verstöße, fast so viele wie der GESAMTE Rest der
+bestehenden Codebase zusammen. Dichter, schwer lesbarer Stil, passte nicht zum Rest des Projekts.
+Kein Blocker für Korrektheit, aber ein echtes Stil-/Wartbarkeits-Problem für ein Tool, das der Nutzer
+von Hand weiterpflegt.
+
+### Round 2 — Codex fix (same session, reformat only)
+Angefordert: reine Neuformatierung der von Runde 1 berührten/erstellten Dateien auf normalen
+Python-Stil (kein Logik-Change). Bericht: alle 46 Tests weiterhin PASS, `ruff check` auf den
+betroffenen Dateien "All checks passed!".
+
+### Claude's Verifikation (Runde 2)
+Unabhängig nachvollzogen: `python -m pytest -q` → 46/46 PASS. `ruff check` auf allen geänderten/neuen
+Dateien selbst ausgeführt → "All checks passed!", bestätigt. `git diff --stat` zeigt reine
+Zeilenumbruch-Änderungen (deutlich mehr Zeilen durch Multi-Line-Formatierung, kein Logik-Drift beim
+Gegenlesen von batch_window.py). Fix-Runden verbraucht: 1 von MAX_FIX_ROUNDS=2.
+
+**Ergebnis:** Build + 1 Fix-Runde reichten aus. Kein Takeover durch Claude nötig. Bereit für
+Mensch-Freigabe vor Commit.
