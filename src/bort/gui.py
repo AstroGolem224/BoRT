@@ -1176,13 +1176,20 @@ class TranscriptionApp:
         """Öffnet eine gespeicherte Review-Sidecar zur nachträglichen Bearbeitung."""
         from .speaker_review import ReviewError, load_review
 
+        initialdir = None
+        initial = self.config.get("last_review_dir")
+        if initial and Path(initial).is_dir():
+            initialdir = initial
         path_str = ask_open_file(
             parent=self.root,
             title="Review-Datei auswählen",
             filetypes=[("Review-Dateien", "*.review.json"), ("Alle", "*.*")],
+            initialdir=initialdir,
         )
         if not path_str:
             return
+        self.config.set_path("last_review_dir", Path(path_str).parent)
+        self.config.save()
         try:
             review = load_review(Path(path_str))
         except ReviewError as exc:
