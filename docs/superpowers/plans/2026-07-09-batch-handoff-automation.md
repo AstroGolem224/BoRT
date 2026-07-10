@@ -316,14 +316,35 @@ def write_outputs(
         writer(segments, path, bookmarks=bookmarks)
         written.append(path)
 
+    # Sidecar VOR den Transkripten schreiben: schlägt sie fehl, existieren noch
+    # keine Transkript-Dateien, die scan_pending() später fälschlich als
+    # "bereits verarbeitet, aber nicht nachbearbeitbar" einstufen könnte.
     if review_data is not None:
+        # base_name in der Sidecar muss den TATSÄCHLICH gewählten unique_base
+        # widerspiegeln (bei Kollision z.B. "session_1"), sonst zeigt der
+        # spätere Reopen-Flow auf die falsche Transkript-Datei.
+        normalized_review_data = {**review_data, "base_name": unique_base}
         review_path = date_dir / f"{unique_base}.review.json"
         with review_path.open("w", encoding="utf-8") as f:
-            json.dump(review_data, f, indent=2, ensure_ascii=False)
+            json.dump(normalized_review_data, f, indent=2, ensure_ascii=False)
         written.append(review_path)
+
+    for fmt in formats:
+        if fmt not in FORMATS:
+            raise ValueError(f"Unbekanntes Format: {fmt}. Möglich: {list(FORMATS)}")
+        suffix, writer = FORMATS[fmt]
+        path = date_dir / f"{unique_base}{suffix}"
+        writer(segments, path, bookmarks=bookmarks)
+        written.append(path)
 
     return written
 ```
+
+Der `for fmt in formats:`-Block, der vorher VOR dem `if review_data is not None:`-Block stand, wird
+also nach hinten verschoben (Reihenfolge: Sidecar zuerst, dann Transkripte) — im obigen Codeblock ist
+das bereits die finale Reihenfolge; beim Einfügen in `write_outputs()` den alten, doppelten
+`for fmt in formats:`-Block (der ursprünglich vor `if review_data` stand) entfernen, sodass er nur
+noch einmal (nach dem Sidecar-Block) vorkommt.
 
 `json` muss in `src/bort/writers.py` importiert sein — am Dateianfang prüfen/ergänzen:
 
@@ -331,10 +352,82 @@ def write_outputs(
 import json
 ```
 
+- [ ] **Step 3b: Test für `_1`-Kollision + Sidecar-`base_name`-Normalisierung ergänzen**
+
+An `tests/test_writers.py` anhängen:
+
+```python
+def test_write_outputs_review_sidecar_base_name_matches_collision_name(
+    tmp_path: Path,
+) -> None:
+    """Bei einer _1-Namenskollision muss die Sidecar auf den TATSÄCHLICH
+    gewählten Dateinamen zeigen, sonst überschreibt ein späterer Reopen die
+    falsche (erste) Transkript-Datei."""
+    segments = [SpeakerSegment(start=0.0, end=1.0, speaker="SP1", text="Hallo")]
+    review_data = {
+        "schema_version": 1, "audio_path": str(tmp_path / "session.m4a"),
+        "segments": [{"start": 0.0, "end": 1.0, "speaker": "SP1", "text": "Hallo"}],
+        "speaker_map": {}, "markers": [], "bookmarks": [],
+        "base_name": "session", "formats": ["txt"],
+    }
+
+    write_outputs(segments, tmp_path, "session", ["txt"])  # belegt "session.txt"
+    second = write_outputs(
+        segments, tmp_path, "session", ["txt"], review_data=review_data
+    )
+
+    review_path = second[0].parent / "session_1.review.json"
+    assert review_path in second
+    saved = json.loads(review_path.read_text(encoding="utf-8"))
+    assert saved["base_name"] == "session_1"
+
+
+def test_write_outputs_review_sidecar_failure_prevents_transcript_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Schlägt das Sidecar-Schreiben fehl, dürfen keine Transkript-Dateien
+    entstehen — sonst hält scan_pending() den Lauf für abgeschlossen, obwohl
+    er nicht nachbearbeitbar ist."""
+    segments = [SpeakerSegment(start=0.0, end=1.0, speaker="SP1", text="Hallo")]
+    review_data = {
+        "schema_version": 1, "audio_path": str(tmp_path / "session.m4a"),
+        "segments": [], "speaker_map": {}, "markers": [], "bookmarks": [],
+        "base_name": "session", "formats": ["txt"],
+    }
+
+    real_open = Path.open
+
+    def failing_open(self: Path, *args: object, **kwargs: object):
+        if self.name == "session.review.json":
+            raise OSError("Simulierter Schreibfehler")
+        return real_open(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", failing_open)
+
+    with pytest.raises(OSError):
+        write_outputs(segments, tmp_path, "session", ["txt"], review_data=review_data)
+
+    assert not (tmp_path / _today_subdir_name() / "session.txt").exists()
+```
+
+Hilfsfunktion `_today_subdir_name()` an den Anfang von `tests/test_writers.py` ergänzen (nutzt
+`datetime`, muss bereits importiert sein oder wird ergänzt):
+
+```python
+from datetime import datetime
+
+
+def _today_subdir_name() -> str:
+    return datetime.now().strftime("%Y-%m-%d")
+```
+
+`import pytest` sicherstellen (für `monkeypatch`-Fixture, ist über pytest automatisch verfügbar,
+kein separater Import nötig — nur `pytest.MonkeyPatch` als Typannotation braucht `import pytest`).
+
 - [ ] **Step 4: Tests laufen lassen, Erfolg verifizieren**
 
 Run: `cd /home/itiger013/Dokumente/Github/BoRT && python -m pytest tests/test_writers.py -v`
-Expected: PASS (alle Tests inkl. der 3 neuen)
+Expected: PASS (alle Tests inkl. der 5 neuen)
 
 - [ ] **Step 5: Commit**
 
@@ -739,14 +832,64 @@ git commit -m "refactor: extract _build_params() from _validate() for reuse by b
 
 ---
 
-### Task 5: Job-Lock in `TranscriptionApp`
+### Task 5: Job-Lock in `TranscriptionApp` + Logger-Handler-Fix
 
 Zentrales, appweites Lock, das Haupt-„Transkribieren" und Batch-„Alle verarbeiten" gegenseitig
 ausschließt (GPU-gebundene Pipeline erlaubt keine zwei gleichzeitigen Läufe). Freigabe läuft über
-eine einzige Routine, die auf JEDEM Beendigungspfad aufgerufen wird.
+eine einzige Routine, die auf JEDEM Beendigungspfad aufgerufen wird. Zusätzlich: `_setup_worker_logging`
+leert aktuell bei JEDEM Aufruf den kompletten Root-Logger (`root.handlers.clear()`) — bei mehreren
+Läufen hintereinander (Batch!) reißt das andere Logger-Hierarchien mit und ist nicht robust gegen
+parallele/schnell aufeinanderfolgende Aufrufe. Fix: nur den selbst hinzugefügten Handler gezielt
+wieder entfernen.
 
 **Files:**
-- Modify: `src/bort/gui.py` (`__init__`, `_on_run`, `_poll_queue`)
+- Modify: `src/bort/gui.py` (`_setup_worker_logging`, `transcription_worker`, `__init__`, `_on_run`, `_poll_queue`)
+
+- [ ] **Step 0: `_setup_worker_logging`/`transcription_worker` Handler-Lebenszyklus fixen**
+
+`_setup_worker_logging` (gui.py:104-111) ersetzen durch:
+
+```python
+def _setup_worker_logging(log_queue: queue.Queue, verbose: bool) -> logging.Handler:
+    """Hängt einen Queue-Handler an den Root-Logger, OHNE bestehende Handler
+    zu entfernen (wichtig bei mehreren Läufen hintereinander, z.B. Batch).
+    Gibt den neu hinzugefügten Handler zurück, damit der Aufrufer ihn nach
+    Lauf-Ende gezielt per `removeHandler` wieder entfernt.
+    """
+    root = logging.getLogger()
+    handler = QueueLogHandler(log_queue)
+    handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
+    root.addHandler(handler)
+    root.setLevel(logging.DEBUG if verbose else logging.INFO)
+    return handler
+```
+
+`transcription_worker` (gui.py:114-266) umschließt seinen bisherigen Körper mit `try/finally`, um den
+Handler garantiert wieder zu entfernen:
+
+```python
+def transcription_worker(params: TranscriptionParams, log_queue: queue.Queue) -> None:
+    """Läuft im Hintergrund-Thread und führt die Transkription aus."""
+    handler = _setup_worker_logging(log_queue, params.verbose)
+    logger = logging.getLogger(__name__)
+    try:
+        # --- ab hier: bisheriger Methodenkörper unverändert (Bookmarks laden,
+        # whisperX/whisper.cpp-Zweig, write_outputs-Aufruf aus Task 6/2,
+        # done_data, except-Block) ---
+        ...
+    finally:
+        logging.getLogger().removeHandler(handler)
+```
+
+(Der `try:`/`except (...)`-Block, der im Original bereits vorhanden ist, bleibt als innerer Block
+erhalten — das neue `try/finally` umschließt ihn zusätzlich von außen, entfernt also den Handler
+sowohl bei Erfolg als auch nach einer der bestehenden `except`-Zweige.)
+
+- [ ] **Step 0b: Manueller Test**
+
+Run: `python -m bort.gui`, zwei Einzel-Läufe kurz hintereinander starten (z.B. gleiche Testdatei
+zweimal). Expected: Log-Zeilen erscheinen in beiden Läufen jeweils genau einmal (kein doppeltes
+Logging durch akkumulierte Handler).
 
 - [ ] **Step 1: Lock-Attribut und Hilfsmethoden ergänzen**
 
@@ -1093,6 +1236,50 @@ def test_load_review_missing_audio_file(tmp_path: Path) -> None:
 
     with pytest.raises(ReviewError, match="Audio"):
         load_review(review_path)
+
+
+def test_load_review_malformed_nested_segment_raises_review_error(
+    tmp_path: Path,
+) -> None:
+    """Ein Segment-Eintrag mit fehlendem/falsch typisiertem Feld darf keinen
+    rohen KeyError/TypeError durchreichen, sondern muss als ReviewError
+    landen (sonst crasht die GUI beim Reopen mit unklarer Meldung)."""
+    audio_path = tmp_path / "session.m4a"
+    audio_path.write_bytes(b"")
+    review_path = tmp_path / "session.review.json"
+    broken = dict(VALID_DATA, audio_path=str(audio_path))
+    broken["segments"] = [{"start": 0.0, "end": 1.0, "text": "Hallo"}]  # "speaker" fehlt
+    review_path.write_text(json.dumps(broken), encoding="utf-8")
+
+    with pytest.raises(ReviewError, match="segments"):
+        load_review(review_path)
+
+
+def test_load_review_rejects_path_traversal_base_name(tmp_path: Path) -> None:
+    """base_name aus einer (potenziell manuell bearbeiteten) Sidecar darf
+    kein Pfadtrenner/'..' enthalten – sonst könnte SpeakerManagerWindow beim
+    Overwrite außerhalb des Review-Ordners schreiben."""
+    audio_path = tmp_path / "session.m4a"
+    audio_path.write_bytes(b"")
+    review_path = tmp_path / "session.review.json"
+    malicious = dict(
+        VALID_DATA, audio_path=str(audio_path), base_name="../../etc/evil"
+    )
+    review_path.write_text(json.dumps(malicious), encoding="utf-8")
+
+    with pytest.raises(ReviewError, match="base_name"):
+        load_review(review_path)
+
+
+def test_load_review_rejects_unknown_format(tmp_path: Path) -> None:
+    audio_path = tmp_path / "session.m4a"
+    audio_path.write_bytes(b"")
+    review_path = tmp_path / "session.review.json"
+    bad_format = dict(VALID_DATA, audio_path=str(audio_path), formats=["exe"])
+    review_path.write_text(json.dumps(bad_format), encoding="utf-8")
+
+    with pytest.raises(ReviewError, match="formats"):
+        load_review(review_path)
 ```
 
 - [ ] **Step 2: Test laufen lassen, Fehlschlag verifizieren**
@@ -1117,6 +1304,7 @@ from pathlib import Path
 
 from .markers import Bookmark, SpeakerMarker
 from .speakers import SpeakerSegment
+from .writers import FORMATS
 
 SUPPORTED_SCHEMA_VERSION = 1
 
@@ -1178,32 +1366,61 @@ def load_review(path: Path) -> ReviewData:
     if not audio_path.exists():
         raise ReviewError(f"Audio-Datei nicht mehr vorhanden: {audio_path}")
 
-    segments = [
-        SpeakerSegment(
-            start=s["start"], end=s["end"], speaker=s["speaker"], text=s["text"]
+    base_name = data["base_name"]
+    if (
+        not isinstance(base_name, str)
+        or not base_name
+        or "/" in base_name
+        or "\\" in base_name
+        or base_name in {".", ".."}
+    ):
+        raise ReviewError(
+            f"base_name ist ungültig (kein Pfadtrenner/'..' erlaubt): {base_name!r}"
         )
-        for s in data["segments"]
-    ]
-    markers = [
-        SpeakerMarker(start=m["start"], end=m["end"], speaker=m["speaker"])
-        for m in data["markers"]
-    ]
-    bookmarks = [
-        Bookmark(
-            time=b["time"], label=b.get("label", ""),
-            type=b.get("type", ""), color=b.get("color", ""),
-        )
-        for b in data["bookmarks"]
-    ]
+
+    formats = data["formats"]
+    if not isinstance(formats, list) or not all(
+        isinstance(fmt, str) and fmt in FORMATS for fmt in formats
+    ):
+        raise ReviewError(f"formats enthält unbekannte(s) Format(e): {formats!r}")
+
+    try:
+        segments = [
+            SpeakerSegment(
+                start=float(s["start"]), end=float(s["end"]),
+                speaker=str(s["speaker"]), text=str(s["text"]),
+            )
+            for s in data["segments"]
+        ]
+        markers = [
+            SpeakerMarker(
+                start=float(m["start"]), end=float(m["end"]),
+                speaker=str(m["speaker"]),
+            )
+            for m in data["markers"]
+        ]
+        bookmarks = [
+            Bookmark(
+                time=float(b["time"]), label=str(b.get("label", "")),
+                type=str(b.get("type", "")), color=str(b.get("color", "")),
+            )
+            for b in data["bookmarks"]
+        ]
+        speaker_map = {str(k): str(v) for k, v in data["speaker_map"].items()}
+    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        raise ReviewError(
+            f"Review-Datei enthält ungültige segments/markers/bookmarks/"
+            f"speaker_map-Einträge: {exc}"
+        ) from exc
 
     return ReviewData(
         audio_path=audio_path,
         segments=segments,
-        speaker_map=dict(data["speaker_map"]),
+        speaker_map=speaker_map,
         markers=markers,
         bookmarks=bookmarks,
-        base_name=data["base_name"],
-        formats=list(data["formats"]),
+        base_name=base_name,
+        formats=list(formats),
     )
 ```
 
@@ -1538,51 +1755,72 @@ class BatchWindow(ctk.CTkToplevel):
         failed = 0
         skipped = 0
         total = len(built)
-        for index, (item, params) in enumerate(built, start=1):
-            if self._stop_requested:
-                skipped += total - index + 1
-                break
-            self.log_queue.put(
-                ("batch_item_start", index, total, item.audio_path.name)
-            )
-
-            if params is None:
-                failed += 1
+        try:
+            for index, (item, params) in enumerate(built, start=1):
+                if self._stop_requested:
+                    skipped += total - index + 1
+                    break
                 self.log_queue.put(
-                    ("batch_item_error", item.audio_path.name, "Ungültige Einstellungen")
+                    ("batch_item_start", index, total, item.audio_path.name)
                 )
-                continue
 
-            if not item.audio_path.exists():
-                skipped += 1
-                self.log_queue.put(
-                    ("batch_item_skip", item.audio_path.name, "Audio nicht mehr vorhanden")
-                )
-                continue
-            if item.marker_path is not None:
-                try:
-                    load_markers(item.marker_path)
-                except MarkerError as exc:
+                if params is None:
+                    failed += 1
+                    self.log_queue.put(
+                        ("batch_item_error", item.audio_path.name, "Ungültige Einstellungen")
+                    )
+                    continue
+
+                # Erneute Prüfung direkt vor der Verarbeitung: Audio/Marker
+                # können sich seit dem Scan verändert haben (SMB-Race).
+                if not item.audio_path.exists() or not is_file_stable(item.audio_path):
+                    skipped += 1
                     self.log_queue.put(
                         (
                             "batch_item_skip", item.audio_path.name,
-                            f"Marker-Datei ungültig geworden: {exc}",
+                            "Audio nicht mehr vorhanden oder wird noch kopiert",
                         )
                     )
-                    skipped += 1
                     continue
+                if item.marker_path is not None:
+                    if not item.marker_path.exists() or not is_file_stable(
+                        item.marker_path
+                    ):
+                        skipped += 1
+                        self.log_queue.put(
+                            (
+                                "batch_item_skip", item.audio_path.name,
+                                "Marker-Datei nicht mehr vorhanden oder wird noch kopiert",
+                            )
+                        )
+                        continue
+                    try:
+                        load_markers(item.marker_path)
+                    except MarkerError as exc:
+                        self.log_queue.put(
+                            (
+                                "batch_item_skip", item.audio_path.name,
+                                f"Marker-Datei ungültig geworden: {exc}",
+                            )
+                        )
+                        skipped += 1
+                        continue
 
-            item_queue: queue.Queue = queue.Queue()
-            transcription_worker(params, item_queue)
-            outcome_ok, outcome_msg = self._drain_item_queue(item_queue, index, total)
-            if outcome_ok:
-                succeeded += 1
-            else:
-                failed += 1
-            self.log_queue.put(
-                ("batch_item_done", item.audio_path.name, outcome_msg)
-            )
-        self.log_queue.put(("batch_finished", succeeded, failed, skipped))
+                item_queue: queue.Queue = queue.Queue()
+                transcription_worker(params, item_queue)
+                outcome_ok, outcome_msg = self._drain_item_queue(item_queue, index, total)
+                if outcome_ok:
+                    succeeded += 1
+                else:
+                    failed += 1
+                self.log_queue.put(
+                    ("batch_item_done", item.audio_path.name, outcome_msg)
+                )
+        finally:
+            # Garantiert IMMER gesendet, auch bei einer unerwarteten Exception
+            # oben — sonst bleibt das Job-Lock (siehe _poll_queue) dauerhaft
+            # belegt und die GUI ist gesperrt.
+            self.log_queue.put(("batch_finished", succeeded, failed, skipped))
 
     def _drain_item_queue(
         self, item_queue: queue.Queue, index: int, total: int
@@ -1686,6 +1924,13 @@ class BatchWindow(ctk.CTkToplevel):
                 "bevor das Fenster geschlossen wird.",
             )
             return
+        if self.scan_thread is not None:
+            show_error(
+                self, "Scan läuft noch",
+                "Bitte warten, bis der Scan abgeschlossen ist, bevor das Fenster "
+                "geschlossen wird.",
+            )
+            return
         self.destroy()
 ```
 
@@ -1776,6 +2021,9 @@ Run: `python -m bort.gui`
    funktioniert.
 9. Während Batch läuft, im Hauptfenster "▶ Transkribieren" klicken → Fehlermeldung "Es läuft bereits
    eine Transkription".
+10. Während "🔍 Scannen" läuft (auf einem Ordner mit mehreren Dateien, damit der ~2s-Stabilitäts-Check
+    pro Datei spürbar dauert), Fenster schließen versuchen → Fehlermeldung "Scan läuft noch", Fenster
+    bleibt offen.
 
 - [ ] **Step 4: Vollen Testlauf verifizieren**
 
@@ -1848,3 +2096,7 @@ git commit -m "docs: document Tailscale+SMB sync-folder setup for batch handoff"
 - Alle in PLAN.md unter "Key decisions" dokumentierten, bewusst abgelehnten Punkte (Stem-Kollision
   zwischen Audio-Endungen, keine Parallelverarbeitung) sind NICHT Teil dieses Task-Plans — siehe
   PLAN.md „Out of scope" für die Begründung.
+- Codex-Runde 4 (Logger-Fix fehlte als Task, Sidecar-`base_name` bei `_1`-Kollision, Atomizitäts-
+  Reihenfolge Sidecar-vor-Transkript, `load_review`-Typvalidierung, Path-Traversal-Schutz,
+  erneuter Stabilitäts-Check pro Item, `try/finally` um `_run_batch`, Schließen-Sperre auch
+  während Scan): eingearbeitet in Task 2, 5, 8, 10.

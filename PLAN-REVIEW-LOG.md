@@ -97,3 +97,33 @@ Overwrite (Task 2), Sidecar-Ausschluss aus `scan_pending` und mtime-Schutz gegen
 (Task 3).
 
 Keine Ablehnungen in dieser Runde — alle Punkte waren berechtigt und wurden übernommen.
+
+## Round 4 — Codex
+- Logger-Fix (Task 5 Text) war nie als konkreter Code-/Test-Schritt im Task-Plan verankert.
+- Review-Sidecar behält bei `_1`-Namenskollision fälschlich den alten `base_name` — Reopen würde falsche Datei überschreiben.
+- Behauptete Atomizität stimmte nicht: Transkripte wurden vor der Sidecar geschrieben.
+- `load_review()` würde bei falschen/fehlenden verschachtelten Feldern rohe KeyError/TypeError werfen statt ReviewError.
+- Path-Traversal über manipulierten `base_name` in der Sidecar möglich (Schreiben außerhalb des Zielordners).
+- Stabilitäts-Schutz endete nach dem Scan — Audio/Marker konnten sich vor der eigentlichen Verarbeitung noch ändern.
+- Marker-Dateien wurden nie auf Kopierstabilität geprüft, nur Audio.
+- `_run_batch()` hatte kein äußeres try/finally — eine Exception hätte das Job-Lock dauerhaft belegt.
+- Fenster-Schließen während eines laufenden SCANS (nicht nur Batch-Lauf) war ungeschützt.
+- Fehlende Tests für all diese Fälle.
+
+VERDICT: REVISE
+
+### Claude's response
+Alle Punkte übernommen, keine Ablehnung in dieser Runde:
+- Task 5: `_setup_worker_logging`/`transcription_worker` Handler-Lebenszyklus jetzt als konkreter
+  Code-Schritt (Step 0/0b) mit Rückgabewert + try/finally-Teardown.
+- Task 2: Sidecar wird VOR den Transkripten geschrieben (Atomizität), `base_name` in der Sidecar auf
+  den tatsächlich gewählten `unique_base` normalisiert; 2 neue Tests (Kollisionsfall,
+  Schreibfehler-verhindert-Transkript).
+- Task 8: `load_review()` validiert `base_name` (kein Pfadtrenner/'..') und `formats` (gegen
+  `writers.FORMATS`-Whitelist) explizit, wrapped die gesamte verschachtelte Rekonstruktion in
+  try/except → einheitlich `ReviewError`; 3 neue Tests (malformed nested, path traversal, unknown
+  format).
+- Task 10 (`BatchWindow._run_batch`): erneuter Existenz- UND Stabilitäts-Check (Audio + Marker)
+  unmittelbar vor jedem Item, komplette Schleife in try/finally gekapselt (garantiert
+  `batch_finished` und damit Lock-Freigabe auch bei unerwarteter Exception). `_on_close` blockt jetzt
+  auch während eines laufenden Scans, nicht nur während eines Batch-Laufs.
