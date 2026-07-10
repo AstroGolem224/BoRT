@@ -1,10 +1,15 @@
-# Batch-Scan Handoff-Automatisierung Implementation Plan
+# Batch-Scan + Speaker-Review Handoff-Automatisierung Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** BoRT bekommt einen "Batch verarbeiten"-Dialog, der unverarbeitete Audio+Marker-Paare in einem Sync-Ordner findet und nacheinander mit der bestehenden Transkriptions-Pipeline verarbeitet — ersetzt die manuelle Einzeldatei-Auswahl für den Sync-Ordner-Workflow.
+**Goal:** BoRT bekommt einen "Batch verarbeiten"-Dialog, der unverarbeitete Audio+Marker-Paare in
+einem Sync-Ordner findet und nacheinander mit der bestehenden Transkriptions-Pipeline verarbeitet, plus
+einen "Sprecher nachträglich bearbeiten"-Flow, der Sprecher-Umbenennung auch lange nach einem
+Batch-Lauf ermöglicht.
 
-**Architektur:** Neue reine Funktion `scan_pending()` in `src/bort/batch.py` findet Audio-Dateien ohne passendes Output-Transkript (Dateisystem als Wahrheitsquelle, kein State-File). Companion-Marker-Suche wird aus `gui.py` in `markers.py` extrahiert (DRY, von Einzeldatei- und Batch-Flow genutzt). Neues `BatchWindow` (customtkinter `CTkToplevel`, analog zu bestehendem `SpeakerManagerWindow`-Pattern) zeigt gefundene Paare, verarbeitet sie sequentiell über die bestehende `transcription_worker()`-Funktion (keine Änderung an der Kernlogik). Die Transfer-Seite (Tailscale+SMB als SAF-Ziel auf dem Handy) ist reine Infrastruktur-/Nutzerkonfiguration ohne Code-Änderung — wird als Dokumentations-Task erfasst.
+**Architektur:** Siehe `PLAN.md` (Repo-Wurzel) für die vollständige Design-Begründung, inkl. 3 Runden
+Codex-Adversarial-Review (Verlauf in `PLAN-REVIEW-LOG.md`). Diese Datei ist der ausführbare
+Task-für-Task-Plan mit vollständigem Code.
 
 **Tech Stack:** Python 3.10+, customtkinter, pytest. Keine neuen Abhängigkeiten.
 
@@ -79,7 +84,7 @@ Expected: FAIL mit `ImportError: cannot import name 'find_companion_marker'`
 
 - [ ] **Step 3: `_looks_like_marker_file` und `find_companion_marker` in `markers.py` implementieren**
 
-An `src/bort/markers.py` anhängen (ans Ende der Datei):
+An `src/bort/markers.py` anhängen:
 
 ```python
 def _looks_like_marker_file(path: Path) -> bool:
@@ -132,9 +137,9 @@ In `src/bort/gui.py:15-19` Import erweitern:
 from .markers import Bookmark, MarkerError, find_companion_marker, load_bookmarks, load_markers
 ```
 
-In `src/bort/gui.py:52-65` die lokale Funktion `_looks_like_marker_file` komplett entfernen (Zeilen 52-65).
+In `src/bort/gui.py:52-65` die lokale Funktion `_looks_like_marker_file` komplett entfernen.
 
-In `src/bort/gui.py:811-841` (`_auto_load_companion_marker`) den Suchblock ersetzen:
+In `src/bort/gui.py:811-841` (`_auto_load_companion_marker`) ersetzen:
 
 ```python
     def _auto_load_companion_marker(self, audio_path: Path) -> None:
@@ -146,7 +151,6 @@ In `src/bort/gui.py:811-841` (`_auto_load_companion_marker`) den Suchblock erset
         """
         current = self.marker_var.get().strip()
         if current and Path(current).exists():
-            # Bereits eine gültige Marker-Datei gesetzt – nichts ändern.
             return
 
         found = find_companion_marker(audio_path)
@@ -157,30 +161,195 @@ In `src/bort/gui.py:811-841` (`_auto_load_companion_marker`) den Suchblock erset
             self.config.save()
             self._log("INFO", f"Marker-JSON automatisch geladen: {found.name}")
             return
-        # Keine passende JSON gefunden – ggf. veralteten Eintrag löschen.
         if current and not Path(current).exists():
             self.marker_var.set("")
 ```
 
-- [ ] **Step 6: Vollen Testlauf + manuellen Smoke-Test verifizieren**
+- [ ] **Step 6: Vollen Testlauf verifizieren**
 
 Run: `cd /home/itiger013/Dokumente/Github/BoRT && python -m pytest -v`
-Expected: alle Tests PASS (kein Verhalten geändert, nur verschoben)
+Expected: alle Tests PASS
 
 - [ ] **Step 7: Commit**
 
 ```bash
 cd /home/itiger013/Dokumente/Github/BoRT
 git add src/bort/markers.py src/bort/gui.py tests/test_markers.py
-git commit -m "refactor: extract companion-marker lookup into markers.py
-
-Enables reuse by the upcoming batch-scan feature without duplicating
-the marker-file heuristics that already live in gui.py."
+git commit -m "refactor: extract companion-marker lookup into markers.py"
 ```
 
 ---
 
-### Task 2: `scan_pending()` — unverarbeitete Paare finden
+### Task 2: `write_outputs()` — `overwrite`- und `review_data`-Unterstützung
+
+Fixt nebenbei einen bestehenden Bug: `SpeakerManagerWindow._on_apply` (Task 8) ruft `write_outputs()`
+mit demselben `base_name` auf, der Sekunden zuvor schon geschrieben wurde — `_unique_base_name()`
+sieht die existierende Datei und erzeugt `_1`-Duplikate statt zu überschreiben. `overwrite=True` behebt
+das für beide Aufrufer (Live-Rename direkt nach einem Lauf UND den neuen Reopen-Flow).
+
+**Files:**
+- Modify: `src/bort/writers.py`
+- Test: `tests/test_writers.py`
+
+- [ ] **Step 1: Failing Tests schreiben**
+
+An `tests/test_writers.py` anhängen:
+
+```python
+def test_write_outputs_overwrite_replaces_existing_files(tmp_path: Path) -> None:
+    segments = [SpeakerSegment(start=0.0, end=1.0, speaker="SP1", text="Hallo")]
+
+    first = write_outputs(segments, tmp_path, "session", ["txt"])
+    assert first[0].read_text(encoding="utf-8").strip() != ""
+
+    updated_segments = [
+        SpeakerSegment(start=0.0, end=1.0, speaker="SP1", text="Geändert")
+    ]
+    second = write_outputs(
+        updated_segments, first[0].parent, "session", ["txt"], overwrite=True
+    )
+
+    assert second[0] == first[0]
+    assert "Geändert" in second[0].read_text(encoding="utf-8")
+    # Kein _1-Duplikat erzeugt:
+    assert not (first[0].parent / "session_1.txt").exists()
+
+
+def test_write_outputs_without_overwrite_creates_unique_name(tmp_path: Path) -> None:
+    segments = [SpeakerSegment(start=0.0, end=1.0, speaker="SP1", text="Hallo")]
+
+    first = write_outputs(segments, tmp_path, "session", ["txt"])
+    second = write_outputs(segments, tmp_path, "session", ["txt"])
+
+    assert first[0] != second[0]
+    assert second[0].name == "session_1.txt"
+
+
+def test_write_outputs_with_review_data_writes_sidecar(tmp_path: Path) -> None:
+    segments = [SpeakerSegment(start=0.0, end=1.0, speaker="SP1", text="Hallo")]
+    review_data = {
+        "schema_version": 1,
+        "audio_path": str(tmp_path / "session.m4a"),
+        "segments": [{"start": 0.0, "end": 1.0, "speaker": "SP1", "text": "Hallo"}],
+        "speaker_map": {"SP1": "sprecher001"},
+        "markers": [],
+        "bookmarks": [],
+        "base_name": "session",
+        "formats": ["txt"],
+    }
+
+    paths = write_outputs(
+        segments, tmp_path, "session", ["txt"], review_data=review_data
+    )
+
+    review_path = paths[0].parent / "session.review.json"
+    assert review_path in paths
+    saved = json.loads(review_path.read_text(encoding="utf-8"))
+    assert saved == review_data
+```
+
+Imports in `tests/test_writers.py` sicherstellen (am Dateianfang ergänzen, falls nicht vorhanden):
+
+```python
+import json
+```
+
+- [ ] **Step 2: Tests laufen lassen, Fehlschlag verifizieren**
+
+Run: `cd /home/itiger013/Dokumente/Github/BoRT && python -m pytest tests/test_writers.py -v`
+Expected: FAIL — `write_outputs()` kennt `overwrite`/`review_data` noch nicht (`TypeError`)
+
+- [ ] **Step 3: `write_outputs()` erweitern**
+
+In `src/bort/writers.py`, `write_outputs` ersetzen durch:
+
+```python
+def write_outputs(
+    segments: list[SpeakerSegment],
+    output_dir: Path,
+    base_name: str,
+    formats: list[str],
+    bookmarks: list[Bookmark] | None = None,
+    review_data: dict | None = None,
+    overwrite: bool = False,
+) -> list[Path]:
+    """Schreibt die gewünschten Ausgabeformate, optional mit Bookmarks.
+
+    Args:
+        segments: Sprechersegmente.
+        output_dir: Zielverzeichnis. Bei ``overwrite=False`` das
+            Elternverzeichnis für einen Datums-Unterordner (bisheriges
+            Verhalten). Bei ``overwrite=True`` das exakte Zielverzeichnis
+            selbst (kein Datums-Unterordner-Neuaufbau) — der Aufrufer muss
+            in diesem Fall bereits den konkreten Ordner kennen, in dem die
+            zu überschreibenden Dateien liegen.
+        base_name: Basisname für die Ausgabedateien.
+        formats: Liste der gewünschten Formate ('txt', 'md', 'csv', 'tsv').
+        bookmarks: Optionale Bookmarks aus der Android-Partner-App.
+        review_data: Optionales Speaker-Review-Sidecar-Dict. Wenn gesetzt,
+            wird zusätzlich ``{unique_base}.review.json`` geschrieben.
+        overwrite: Wenn True, wird kein neuer eindeutiger Dateiname gesucht,
+            sondern exakt ``{base_name}{suffix}`` in ``output_dir``
+            überschrieben (Verhalten für Sprecher-Umbenennung nach einem
+            Lauf – siehe ``SpeakerManagerWindow._on_apply``).
+
+    Returns:
+        Liste der erzeugten Dateipfade (inkl. Review-Sidecar, falls
+        angegeben).
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if overwrite:
+        date_dir = output_dir
+        unique_base = base_name
+    else:
+        date_dir = _date_subdir(output_dir)
+        unique_base = _unique_base_name(date_dir, base_name, formats)
+
+    written: list[Path] = []
+    for fmt in formats:
+        if fmt not in FORMATS:
+            raise ValueError(f"Unbekanntes Format: {fmt}. Möglich: {list(FORMATS)}")
+        suffix, writer = FORMATS[fmt]
+        path = date_dir / f"{unique_base}{suffix}"
+        writer(segments, path, bookmarks=bookmarks)
+        written.append(path)
+
+    if review_data is not None:
+        review_path = date_dir / f"{unique_base}.review.json"
+        with review_path.open("w", encoding="utf-8") as f:
+            json.dump(review_data, f, indent=2, ensure_ascii=False)
+        written.append(review_path)
+
+    return written
+```
+
+`json` muss in `src/bort/writers.py` importiert sein — am Dateianfang prüfen/ergänzen:
+
+```python
+import json
+```
+
+- [ ] **Step 4: Tests laufen lassen, Erfolg verifizieren**
+
+Run: `cd /home/itiger013/Dokumente/Github/BoRT && python -m pytest tests/test_writers.py -v`
+Expected: PASS (alle Tests inkl. der 3 neuen)
+
+- [ ] **Step 5: Commit**
+
+```bash
+cd /home/itiger013/Dokumente/Github/BoRT
+git add src/bort/writers.py tests/test_writers.py
+git commit -m "feat: add overwrite and review_data support to write_outputs()
+
+Fixes a latent bug where re-writing a transcript right after speaker
+rename created _1 duplicates instead of overwriting."
+```
+
+---
+
+### Task 3: `scan_pending()` — unverarbeitete Paare finden
 
 **Files:**
 - Create: `src/bort/batch.py`
@@ -194,9 +363,11 @@ Erstelle `tests/test_batch.py`:
 """Tests für Batch-Scan (unverarbeitete Audio+Marker-Paare finden)."""
 
 import json
+import os
+import time
 from pathlib import Path
 
-from bort.batch import PendingItem, scan_pending
+from bort.batch import PendingItem, is_file_stable, scan_pending
 
 
 def test_scan_pending_finds_new_pair(tmp_path: Path) -> None:
@@ -227,8 +398,6 @@ def test_scan_pending_excludes_already_processed(tmp_path: Path) -> None:
     audio_path = watch_dir / "session.m4a"
     audio_path.write_bytes(b"")
 
-    # Bereits verarbeitet: Output liegt in einem Datums-Unterordner
-    # (schreibt schon `write_outputs()` so), nicht direkt in output_dir.
     date_dir = output_dir / "2026-07-09"
     date_dir.mkdir()
     (date_dir / "session.txt").write_text("transcript", encoding="utf-8")
@@ -238,7 +407,13 @@ def test_scan_pending_excludes_already_processed(tmp_path: Path) -> None:
     assert pending == []
 
 
-def test_scan_pending_no_marker_still_included(tmp_path: Path) -> None:
+def test_scan_pending_ignores_review_and_markers_sidecars_as_output(
+    tmp_path: Path,
+) -> None:
+    """Eine Auto-Marker- oder Review-Sidecar-Datei allein zählt NICHT als
+    Nachweis, dass eine Aufnahme verarbeitet wurde (Kernbug aus Codex-Review
+    Runde 1: eine vor einem Exportfehler geschriebene Sidecar würde sonst
+    einen Fehlschlag als Erfolg tarnen)."""
     watch_dir = tmp_path / "watch"
     output_dir = tmp_path / "output"
     watch_dir.mkdir()
@@ -246,6 +421,36 @@ def test_scan_pending_no_marker_still_included(tmp_path: Path) -> None:
 
     audio_path = watch_dir / "session.m4a"
     audio_path.write_bytes(b"")
+
+    date_dir = output_dir / "2026-07-09"
+    date_dir.mkdir()
+    (date_dir / "session.markers.json").write_text("{}", encoding="utf-8")
+    (date_dir / "session.review.json").write_text("{}", encoding="utf-8")
+
+    pending = scan_pending(watch_dir, output_dir)
+
+    assert pending == [PendingItem(audio_path=audio_path, marker_path=None)]
+
+
+def test_scan_pending_stale_output_does_not_mask_newer_audio(
+    tmp_path: Path,
+) -> None:
+    """Ein altes Transkript darf ein SPÄTER neu eingetroffenes, gleichnamiges
+    Audio nicht als 'erledigt' maskieren (mtime-Vergleich)."""
+    watch_dir = tmp_path / "watch"
+    output_dir = tmp_path / "output"
+    watch_dir.mkdir()
+    output_dir.mkdir()
+
+    date_dir = output_dir / "2026-07-01"
+    date_dir.mkdir()
+    old_output = date_dir / "session.txt"
+    old_output.write_text("altes transkript", encoding="utf-8")
+    old_time = time.time() - 3600
+    os.utime(old_output, (old_time, old_time))
+
+    audio_path = watch_dir / "session.m4a"
+    audio_path.write_bytes(b"")  # mtime = jetzt, neuer als old_output
 
     pending = scan_pending(watch_dir, output_dir)
 
@@ -266,6 +471,29 @@ def test_scan_pending_ignores_non_audio_files(tmp_path: Path) -> None:
 
 def test_scan_pending_missing_watch_dir_returns_empty(tmp_path: Path) -> None:
     assert scan_pending(tmp_path / "does-not-exist", tmp_path / "output") == []
+
+
+def test_is_file_stable_true_when_unchanged_across_samples(tmp_path: Path) -> None:
+    path = tmp_path / "audio.m4a"
+    path.write_bytes(b"1234")
+
+    assert is_file_stable(path, interval=0.0, sleep_fn=lambda _: None) is True
+
+
+def test_is_file_stable_false_when_size_changes_between_samples(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "audio.m4a"
+    path.write_bytes(b"1234")
+
+    calls = {"n": 0}
+
+    def fake_sleep(_seconds: float) -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            path.write_bytes(b"12345678")  # wächst zwischen den Samples
+
+    assert is_file_stable(path, interval=0.0, sleep_fn=fake_sleep) is False
 ```
 
 - [ ] **Step 2: Test laufen lassen, Fehlschlag verifizieren**
@@ -279,16 +507,23 @@ Expected: FAIL mit `ModuleNotFoundError: No module named 'bort.batch'`
 """Findet unverarbeitete Audio+Marker-Paare in einem Sync-/Watch-Ordner.
 
 Dateisystem ist die alleinige Wahrheitsquelle: ein Audio gilt als bereits
-verarbeitet, sobald irgendwo unter ``output_dir`` (auch in einem
-Datums-Unterordner, siehe ``writers.write_outputs``) eine Datei mit
-gleichem Stem existiert. Kein separates State-File nötig.
+verarbeitet, sobald unter ``output_dir`` (auch in einem Datums-Unterordner,
+siehe ``writers.write_outputs``) eine echte Transkript-Ausgabedatei mit
+gleichem Stem existiert, die nicht älter ist als das Audio selbst.
+Auto-Marker- und Review-Sidecar-Dateien zählen dabei NICHT als Nachweis, da
+sie bereits vor einem möglichen Exportfehler geschrieben werden können.
 """
 
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
 from .audio import is_supported_audio
 from .markers import find_companion_marker
+from .writers import FORMATS
+
+_OUTPUT_SUFFIXES = tuple(suffix for suffix, _writer in FORMATS.values())
 
 
 @dataclass(frozen=True)
@@ -300,20 +535,52 @@ class PendingItem:
 
 
 def _has_output(audio_path: Path, output_dir: Path) -> bool:
-    """Prüft, ob bereits eine Ausgabedatei für dieses Audio existiert."""
+    """Prüft, ob bereits eine gültige, aktuelle Ausgabedatei existiert."""
     if not output_dir.is_dir():
         return False
-    return any(output_dir.rglob(f"{audio_path.stem}.*"))
+    audio_mtime = audio_path.stat().st_mtime
+    for suffix in _OUTPUT_SUFFIXES:
+        for candidate in output_dir.rglob(f"{audio_path.stem}{suffix}"):
+            if candidate.stat().st_mtime >= audio_mtime:
+                return True
+    return False
+
+
+def is_file_stable(
+    path: Path,
+    interval: float = 2.0,
+    sleep_fn: Callable[[float], None] = time.sleep,
+) -> bool:
+    """Prüft per Doppel-Stichprobe, ob eine Datei fertig kopiert wurde.
+
+    Vergleicht Größe und Änderungszeit zweier Beobachtungen im Abstand von
+    ``interval`` Sekunden. Nur wenn beide übereinstimmen, gilt die Datei als
+    stabil (kein noch laufender SMB-Kopiervorgang). ``sleep_fn`` ist
+    injizierbar, damit Tests nicht real warten müssen.
+    """
+    try:
+        first = path.stat()
+    except OSError:
+        return False
+    sleep_fn(interval)
+    try:
+        second = path.stat()
+    except OSError:
+        return False
+    return (first.st_size, first.st_mtime) == (second.st_size, second.st_mtime)
 
 
 def scan_pending(watch_dir: Path, output_dir: Path) -> list[PendingItem]:
-    """Findet Audio-Dateien in ``watch_dir`` ohne zugehöriges Output.
+    """Findet Audio-Dateien in ``watch_dir`` ohne gültiges Output.
+
+    Prüft NICHT die Kopier-Stabilität (siehe :func:`is_file_stable` für
+    einen separaten, expliziten Aufruf durch die GUI vor der Anzeige) — dies
+    bleibt eine reine, schnelle Dateisystem-Abfrage ohne Wartezeit.
 
     Args:
         watch_dir: Ordner, in den die Partner-App (BoR) Aufnahmen ablegt
             (z.B. ein per Tailscale+SMB erreichbarer Ordner).
-        output_dir: Ausgabeverzeichnis der Transkriptions-Pipeline
-            (gleicher Ordner, den auch die Einzeldatei-Verarbeitung nutzt).
+        output_dir: Ausgabeverzeichnis der Transkriptions-Pipeline.
 
     Returns:
         Liste von :class:`PendingItem`, sortiert nach Dateiname.
@@ -339,28 +606,30 @@ def scan_pending(watch_dir: Path, output_dir: Path) -> list[PendingItem]:
 - [ ] **Step 4: Test laufen lassen, Erfolg verifizieren**
 
 Run: `cd /home/itiger013/Dokumente/Github/BoRT && python -m pytest tests/test_batch.py -v`
-Expected: PASS (alle 5 Tests)
+Expected: PASS (alle Tests)
 
 - [ ] **Step 5: Commit**
 
 ```bash
 cd /home/itiger013/Dokumente/Github/BoRT
 git add src/bort/batch.py tests/test_batch.py
-git commit -m "feat: add scan_pending() to find unprocessed audio+marker pairs"
+git commit -m "feat: add scan_pending() and is_file_stable() for batch handoff"
 ```
 
 ---
 
-### Task 3: `_build_params()` aus `_validate()` extrahieren (Vorbereitung Batch-Verarbeitung)
+### Task 4: `_build_params()` aus `_validate()` extrahieren
 
-Reiner Refactor, verhaltensgleich — macht die Parameter-Erzeugung für beliebige Audio/Marker-Pfade wiederverwendbar (nicht nur die aktuell in der GUI eingetragenen), damit `BatchWindow` (Task 4) dieselbe Validierungs-/Params-Logik nutzt statt sie zu duplizieren.
+Reiner Refactor, verhaltensgleich — macht die Parameter-Erzeugung für beliebige Audio/Marker-Pfade
+wiederverwendbar. Wird ausschließlich im Main-Thread aufgerufen (Task 11 baut alle Batch-Params im
+Main-Thread, bevor der Worker-Thread startet — verhindert Tk-Zugriff aus einem Hintergrund-Thread).
 
 **Files:**
 - Modify: `src/bort/gui.py:916-991` (`_validate`)
 
-- [ ] **Step 1: `_validate` in `gui.py` in zwei Methoden aufteilen**
+- [ ] **Step 1: `_validate` in zwei Methoden aufteilen**
 
-Ersetze die bestehende `_validate`-Methode (gui.py:916-991) durch:
+Ersetze die bestehende `_validate`-Methode durch:
 
 ```python
     def _validate(self) -> TranscriptionParams | None:
@@ -393,7 +662,8 @@ Ersetze die bestehende `_validate`-Methode (gui.py:916-991) durch:
 
         Nimmt Audio- und Marker-Pfad als Argumente entgegen (statt aus den
         Tk-Feldern zu lesen), damit dieselbe Logik auch für Batch-Verarbeitung
-        beliebiger Dateien genutzt werden kann.
+        beliebiger Dateien genutzt werden kann. Darf NUR im Main-Thread
+        aufgerufen werden (liest Tk-Variablen, kann Fehlerdialoge öffnen).
         """
         backend = BACKENDS[self.backend_display_var.get()]
         model_path: Path | None = None
@@ -403,7 +673,7 @@ Ersetze die bestehende `_validate`-Methode (gui.py:916-991) durch:
             if not model_path.exists():
                 show_error(self.root, "Fehler", "Modell-Datei nicht gefunden.")
                 return None
-        else:  # whisperx
+        else:
             whisperx_model = self.model_combo_var.get() or "large-v3"
 
         output_dir = Path(self.output_var.get())
@@ -451,14 +721,13 @@ Ersetze die bestehende `_validate`-Methode (gui.py:916-991) durch:
         )
 ```
 
-- [ ] **Step 2: Bestehende Tests + manuellen Smoke-Test verifizieren**
+- [ ] **Step 2: Vollen Testlauf + manuellen Smoke-Test verifizieren**
 
 Run: `cd /home/itiger013/Dokumente/Github/BoRT && python -m pytest -v`
-Expected: alle Tests weiterhin PASS (reiner Refactor, betrifft keine Test-Datei direkt)
+Expected: alle Tests PASS
 
-Manueller Smoke-Test (GUI hat keine automatisierten Tests):
-Run: `cd /home/itiger013/Dokumente/Github/BoRT && python -m bort.gui`
-Erwartet: App startet unverändert, eine Test-Audiodatei auswählen und "▶ Transkribieren" klicken läuft wie vorher durch (gleiches Verhalten wie vor dem Refactor).
+Manueller Smoke-Test: `python -m bort.gui` starten, Audio auswählen, "▶ Transkribieren" klicken —
+Verhalten unverändert zu vorher.
 
 - [ ] **Step 3: Commit**
 
@@ -470,7 +739,578 @@ git commit -m "refactor: extract _build_params() from _validate() for reuse by b
 
 ---
 
-### Task 4: `BatchWindow` — Batch-Scan-Dialog
+### Task 5: Job-Lock in `TranscriptionApp`
+
+Zentrales, appweites Lock, das Haupt-„Transkribieren" und Batch-„Alle verarbeiten" gegenseitig
+ausschließt (GPU-gebundene Pipeline erlaubt keine zwei gleichzeitigen Läufe). Freigabe läuft über
+eine einzige Routine, die auf JEDEM Beendigungspfad aufgerufen wird.
+
+**Files:**
+- Modify: `src/bort/gui.py` (`__init__`, `_on_run`, `_poll_queue`)
+
+- [ ] **Step 1: Lock-Attribut und Hilfsmethoden ergänzen**
+
+In `TranscriptionApp.__init__` (nach `self.worker_thread: threading.Thread | None = None`, gui.py:287) ergänzen:
+
+```python
+        self.job_running = False
+```
+
+Neue Methoden nach `_hide_progress` (gui.py, nach Zeile 1077) einfügen:
+
+```python
+    def try_acquire_job(self) -> bool:
+        """Versucht das appweite Job-Lock zu belegen. False, wenn belegt."""
+        if self.job_running:
+            return False
+        self.job_running = True
+        return True
+
+    def release_job(self) -> None:
+        """Gibt das appweite Job-Lock frei (idempotent)."""
+        self.job_running = False
+```
+
+- [ ] **Step 2: `_on_run` das Lock nutzen lassen**
+
+`_on_run` (gui.py:993-1015) am Anfang ergänzen:
+
+```python
+    def _on_run(self) -> None:
+        if not self.try_acquire_job():
+            show_error(
+                self.root, "Fehler",
+                "Es läuft bereits eine Transkription (Einzel-Lauf oder Batch).",
+            )
+            return
+        params = self._validate()
+        if params is None:
+            self.release_job()
+            return
+        ...
+```
+
+(Restlicher Methodenkörper unverändert, nur die ersten Zeilen wie oben ergänzt — `params is None`
+gibt das Lock sofort wieder frei statt es hängen zu lassen.)
+
+- [ ] **Step 3: `_poll_queue` gibt das Lock bei `done`/`error` frei**
+
+In `_poll_queue` (gui.py:1017-1072), sowohl im `"done"`- als auch im `"error"`-Zweig, direkt nach
+`self.run_button.configure(state="normal")` ergänzen:
+
+```python
+                    self.release_job()
+```
+
+(Einmal im `done`-Zweig, einmal im `error`-Zweig — beide Stellen rufen bereits
+`self.run_button.configure(state="normal")` auf, direkt danach `self.release_job()` einfügen.)
+
+- [ ] **Step 4: Manueller Smoke-Test**
+
+Run: `python -m bort.gui`, zweimal schnell hintereinander "▶ Transkribieren" klicken (zweiter Klick
+während erster Lauf noch läuft) → Fehlerdialog "Es läuft bereits eine Transkription" statt zweitem
+parallelen Lauf.
+
+- [ ] **Step 5: Commit**
+
+```bash
+cd /home/itiger013/Dokumente/Github/BoRT
+git add src/bort/gui.py
+git commit -m "feat: add app-wide job lock to prevent concurrent transcription runs"
+```
+
+---
+
+### Task 6: Review-Sidecar beim whisperX-Lauf schreiben
+
+**Files:**
+- Modify: `src/bort/gui.py` (`transcription_worker`)
+
+- [ ] **Step 1: `review_data` im whisperX-Zweig bauen und an `write_outputs` übergeben**
+
+In `transcription_worker` (gui.py:114-266), im `write_outputs`-Aufruf (gui.py:223-229) ersetzen durch:
+
+```python
+        review_data = None
+        if params.backend == "whisperx":
+            review_data = {
+                "schema_version": 1,
+                "audio_path": str(params.audio_path),
+                "segments": [
+                    {
+                        "start": s.start, "end": s.end,
+                        "speaker": s.speaker, "text": s.text,
+                    }
+                    for s in speaker_segments
+                ],
+                "speaker_map": dict(wx_speaker_map) if wx_speaker_map else {},
+                "markers": [
+                    {"start": m.start, "end": m.end, "speaker": m.speaker}
+                    for m in (wx_markers or [])
+                ],
+                "bookmarks": [
+                    {
+                        "time": b.time, "label": b.label,
+                        "type": b.type, "color": b.color,
+                    }
+                    for b in bookmarks
+                ],
+                "base_name": params.audio_path.stem,
+                "formats": params.formats,
+            }
+
+        output_paths = write_outputs(
+            segments=speaker_segments,
+            output_dir=params.output_dir,
+            base_name=params.audio_path.stem,
+            formats=params.formats,
+            bookmarks=bookmarks or None,
+            review_data=review_data,
+        )
+```
+
+In `done_data` (gui.py:244-255) den Schlüssel `"output_location"` ergänzen:
+
+```python
+        done_data = {
+            "backend": params.backend,
+            "audio_path": params.audio_path,
+            "marker_path": params.marker_path,
+            "segments": speaker_segments,
+            "speaker_map": wx_speaker_map,
+            "markers": wx_markers,
+            "bookmarks": bookmarks,
+            "output_dir": params.output_dir,
+            "output_location": output_location,
+            "base_name": params.audio_path.stem,
+            "formats": params.formats,
+        }
+```
+
+- [ ] **Step 2: `_open_speaker_manager` das exakte Zielverzeichnis übergeben**
+
+In `_open_speaker_manager` (gui.py:1079-1101), im `SpeakerManagerWindow(...)`-Aufruf
+`output_dir=data["output_dir"]` ersetzen durch `output_dir=data["output_location"]`:
+
+```python
+            SpeakerManagerWindow(
+                parent=self.root,
+                audio_path=data["audio_path"],
+                segments=data["segments"],
+                raw_segments=[],
+                speaker_map=data["speaker_map"],
+                markers=data["markers"] or [],
+                bookmarks=data.get("bookmarks") or [],
+                output_dir=data["output_location"],
+                base_name=data["base_name"],
+                formats=data["formats"],
+            )
+```
+
+(Grund: `output_dir` war bisher der Wurzel-Ausgabeordner; `_on_apply`, Task 8, überschreibt künftig
+direkt im übergebenen Verzeichnis, statt erneut einen Datums-Unterordner zu berechnen — dafür muss
+das exakte, bereits existierende Zielverzeichnis übergeben werden.)
+
+- [ ] **Step 3: Vollen Testlauf + manuellen Smoke-Test verifizieren**
+
+Run: `cd /home/itiger013/Dokumente/Github/BoRT && python -m pytest -v`
+Expected: alle Tests PASS
+
+Manueller Smoke-Test: `python -m bort.gui`, whisperX-Backend, echte Audiodatei transkribieren →
+im Ausgabeordner liegt zusätzlich `<stem>.review.json` neben den Transkript-Dateien.
+
+- [ ] **Step 4: Commit**
+
+```bash
+cd /home/itiger013/Dokumente/Github/BoRT
+git add src/bort/gui.py
+git commit -m "feat: write speaker-review sidecar for whisperX runs"
+```
+
+---
+
+### Task 7: `SpeakerManagerWindow` — Overwrite statt Duplikat, Sidecar aktuell halten
+
+**Files:**
+- Modify: `src/bort/speaker_manager.py` (`_on_apply`)
+
+- [ ] **Step 1: `_on_apply` auf `overwrite=True` umstellen und Sidecar mitschreiben**
+
+In `_on_apply` (speaker_manager.py:280-329), den `write_outputs`-Aufruf ersetzen:
+
+```python
+        review_data = {
+            "schema_version": 1,
+            "audio_path": str(self.audio_path),
+            "segments": [
+                {
+                    "start": s.start, "end": s.end,
+                    "speaker": s.speaker, "text": s.text,
+                }
+                for s in updated_segments
+            ],
+            "speaker_map": dict(new_map),
+            "markers": [
+                {"start": m.start, "end": m.end, "speaker": m.speaker}
+                for m in updated_markers
+            ],
+            "bookmarks": [
+                {
+                    "time": b.time, "label": b.label,
+                    "type": b.type, "color": b.color,
+                }
+                for b in self.bookmarks
+            ],
+            "base_name": self.base_name,
+            "formats": self.formats,
+        }
+
+        try:
+            output_paths = write_outputs(
+                segments=updated_segments,
+                output_dir=self.output_dir,
+                base_name=self.base_name,
+                formats=self.formats,
+                bookmarks=self.bookmarks or None,
+                review_data=review_data,
+                overwrite=True,
+            )
+```
+
+(Nur der `write_outputs(...)`-Aufruf wird ersetzt; die Zeilen davor — Aufbau von `new_map`,
+`updated_segments`, `updated_markers` — und danach — `show_info(...)`, Exception-Handling — bleiben
+unverändert.)
+
+- [ ] **Step 2: Manueller Smoke-Test**
+
+Run: `python -m bort.gui`, whisperX-Backend, echte Audiodatei transkribieren, im sich öffnenden
+Speaker-Manager einen Sprecher umbenennen, "Anwenden" klicken.
+Expected: dieselbe(n) Transkript-Datei(en) werden überschrieben (kein `_1`-Duplikat im
+Ausgabeordner), `<stem>.review.json` enthält den neuen Sprechernamen.
+
+- [ ] **Step 3: Commit**
+
+```bash
+cd /home/itiger013/Dokumente/Github/BoRT
+git add src/bort/speaker_manager.py
+git commit -m "fix: overwrite transcript in-place on speaker rename instead of creating _1 duplicates
+
+Also keeps the speaker-review sidecar in sync with renames."
+```
+
+---
+
+### Task 8: `speaker_review.py` — Sidecar laden/validieren
+
+Reine, testbare Lade-Logik, getrennt von der GUI-Verdrahtung (Task 9).
+
+**Files:**
+- Create: `src/bort/speaker_review.py`
+- Test: `tests/test_speaker_review.py`
+
+- [ ] **Step 1: Failing Tests schreiben**
+
+Erstelle `tests/test_speaker_review.py`:
+
+```python
+"""Tests für das Laden/Validieren von Speaker-Review-Sidecars."""
+
+import json
+from pathlib import Path
+
+import pytest
+
+from bort.markers import Bookmark, SpeakerMarker
+from bort.speaker_review import ReviewData, ReviewError, load_review
+
+VALID_DATA = {
+    "schema_version": 1,
+    "audio_path": "",  # wird pro Test mit echtem tmp_path gefüllt
+    "segments": [{"start": 0.0, "end": 1.0, "speaker": "SP1", "text": "Hallo"}],
+    "speaker_map": {"SP1": "sprecher001"},
+    "markers": [{"start": 0.0, "end": 1.0, "speaker": "SP1"}],
+    "bookmarks": [{"time": 0.5, "label": "Wichtig", "type": "note", "color": ""}],
+    "base_name": "session",
+    "formats": ["txt"],
+}
+
+
+def test_load_review_success(tmp_path: Path) -> None:
+    audio_path = tmp_path / "session.m4a"
+    audio_path.write_bytes(b"")
+    review_path = tmp_path / "session.review.json"
+    data = dict(VALID_DATA, audio_path=str(audio_path))
+    review_path.write_text(json.dumps(data), encoding="utf-8")
+
+    result = load_review(review_path)
+
+    assert isinstance(result, ReviewData)
+    assert result.audio_path == audio_path
+    assert result.segments[0].speaker == "SP1"
+    assert result.speaker_map == {"SP1": "sprecher001"}
+    assert result.markers == [SpeakerMarker(0.0, 1.0, "SP1")]
+    assert result.bookmarks == [Bookmark(0.5, "Wichtig", "note", "")]
+    assert result.base_name == "session"
+    assert result.formats == ["txt"]
+
+
+def test_load_review_missing_file() -> None:
+    with pytest.raises(ReviewError, match="nicht gefunden"):
+        load_review(Path("/does/not/exist.review.json"))
+
+
+def test_load_review_invalid_json(tmp_path: Path) -> None:
+    review_path = tmp_path / "broken.review.json"
+    review_path.write_text("not json", encoding="utf-8")
+
+    with pytest.raises(ReviewError, match="ungültig"):
+        load_review(review_path)
+
+
+def test_load_review_missing_field(tmp_path: Path) -> None:
+    review_path = tmp_path / "incomplete.review.json"
+    incomplete = dict(VALID_DATA, audio_path=str(tmp_path / "x.m4a"))
+    del incomplete["speaker_map"]
+    review_path.write_text(json.dumps(incomplete), encoding="utf-8")
+
+    with pytest.raises(ReviewError, match="speaker_map"):
+        load_review(review_path)
+
+
+def test_load_review_unsupported_schema_version(tmp_path: Path) -> None:
+    review_path = tmp_path / "future.review.json"
+    future = dict(VALID_DATA, audio_path=str(tmp_path / "x.m4a"), schema_version=99)
+    review_path.write_text(json.dumps(future), encoding="utf-8")
+
+    with pytest.raises(ReviewError, match="schema_version"):
+        load_review(review_path)
+
+
+def test_load_review_missing_audio_file(tmp_path: Path) -> None:
+    review_path = tmp_path / "session.review.json"
+    data = dict(VALID_DATA, audio_path=str(tmp_path / "does-not-exist.m4a"))
+    review_path.write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(ReviewError, match="Audio"):
+        load_review(review_path)
+```
+
+- [ ] **Step 2: Test laufen lassen, Fehlschlag verifizieren**
+
+Run: `cd /home/itiger013/Dokumente/Github/BoRT && python -m pytest tests/test_speaker_review.py -v`
+Expected: FAIL mit `ModuleNotFoundError: No module named 'bort.speaker_review'`
+
+- [ ] **Step 3: `src/bort/speaker_review.py` implementieren**
+
+```python
+"""Laden und Validieren von Speaker-Review-Sidecar-Dateien (`*.review.json`).
+
+Diese Sidecars werden von `transcription_worker` (whisperX-Zweig) und von
+`SpeakerManagerWindow._on_apply` geschrieben (siehe `writers.write_outputs`,
+Parameter `review_data`). Sie erlauben es, Sprecher-Umbenennung auch lange
+nach einem Transkriptions-Lauf erneut zu öffnen.
+"""
+
+import json
+from dataclasses import dataclass
+from pathlib import Path
+
+from .markers import Bookmark, SpeakerMarker
+from .speakers import SpeakerSegment
+
+SUPPORTED_SCHEMA_VERSION = 1
+
+REQUIRED_FIELDS = (
+    "schema_version", "audio_path", "segments", "speaker_map",
+    "markers", "bookmarks", "base_name", "formats",
+)
+
+
+class ReviewError(Exception):
+    """Fehler beim Laden/Validieren einer Review-Sidecar-Datei."""
+
+
+@dataclass(frozen=True)
+class ReviewData:
+    """Rekonstruierte, typisierte Sicht auf eine Review-Sidecar-Datei."""
+
+    audio_path: Path
+    segments: list[SpeakerSegment]
+    speaker_map: dict[str, str]
+    markers: list[SpeakerMarker]
+    bookmarks: list[Bookmark]
+    base_name: str
+    formats: list[str]
+
+
+def load_review(path: Path) -> ReviewData:
+    """Lädt und validiert eine Review-Sidecar-Datei.
+
+    Raises:
+        ReviewError: bei fehlender Datei, ungültigem JSON, fehlenden
+            Pflichtfeldern, nicht unterstützter Schema-Version oder wenn
+            die referenzierte Audiodatei nicht mehr existiert.
+    """
+    path = Path(path)
+    if not path.exists():
+        raise ReviewError(f"Review-Datei nicht gefunden: {path}")
+
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+    except json.JSONDecodeError as exc:
+        raise ReviewError(f"Review-Datei ist ungültig (kein JSON): {exc}") from exc
+
+    if not isinstance(data, dict):
+        raise ReviewError("Review-Datei ist ungültig (kein JSON-Objekt).")
+
+    missing = [field for field in REQUIRED_FIELDS if field not in data]
+    if missing:
+        raise ReviewError(f"Review-Datei fehlt Pflichtfeld(er): {', '.join(missing)}")
+
+    if data["schema_version"] != SUPPORTED_SCHEMA_VERSION:
+        raise ReviewError(
+            f"Nicht unterstützte schema_version: {data['schema_version']} "
+            f"(erwartet: {SUPPORTED_SCHEMA_VERSION})"
+        )
+
+    audio_path = Path(data["audio_path"])
+    if not audio_path.exists():
+        raise ReviewError(f"Audio-Datei nicht mehr vorhanden: {audio_path}")
+
+    segments = [
+        SpeakerSegment(
+            start=s["start"], end=s["end"], speaker=s["speaker"], text=s["text"]
+        )
+        for s in data["segments"]
+    ]
+    markers = [
+        SpeakerMarker(start=m["start"], end=m["end"], speaker=m["speaker"])
+        for m in data["markers"]
+    ]
+    bookmarks = [
+        Bookmark(
+            time=b["time"], label=b.get("label", ""),
+            type=b.get("type", ""), color=b.get("color", ""),
+        )
+        for b in data["bookmarks"]
+    ]
+
+    return ReviewData(
+        audio_path=audio_path,
+        segments=segments,
+        speaker_map=dict(data["speaker_map"]),
+        markers=markers,
+        bookmarks=bookmarks,
+        base_name=data["base_name"],
+        formats=list(data["formats"]),
+    )
+```
+
+- [ ] **Step 4: Test laufen lassen, Erfolg verifizieren**
+
+Run: `cd /home/itiger013/Dokumente/Github/BoRT && python -m pytest tests/test_speaker_review.py -v`
+Expected: PASS (alle Tests)
+
+- [ ] **Step 5: Commit**
+
+```bash
+cd /home/itiger013/Dokumente/Github/BoRT
+git add src/bort/speaker_review.py tests/test_speaker_review.py
+git commit -m "feat: add speaker-review sidecar loader with schema validation"
+```
+
+---
+
+### Task 9: Reopen-Flow — "🎧 Sprecher nachträglich bearbeiten…"
+
+**Files:**
+- Modify: `src/bort/gui.py` (neue Methode + neuer Button)
+
+- [ ] **Step 1: Neue Methode `_open_speaker_review` ergänzen**
+
+Nach `_open_speaker_manager` (gui.py, nach Zeile 1101) einfügen:
+
+```python
+    def _open_speaker_review(self) -> None:
+        """Öffnet eine gespeicherte Review-Sidecar zur nachträglichen Bearbeitung."""
+        from .speaker_review import ReviewError, load_review
+
+        path_str = ask_open_file(
+            parent=self.root,
+            title="Review-Datei auswählen",
+            filetypes=[("Review-Dateien", "*.review.json"), ("Alle", "*.*")],
+        )
+        if not path_str:
+            return
+
+        try:
+            review = load_review(Path(path_str))
+        except ReviewError as exc:
+            show_error(self.root, "Fehler", str(exc))
+            return
+
+        try:
+            SpeakerManagerWindow(
+                parent=self.root,
+                audio_path=review.audio_path,
+                segments=review.segments,
+                raw_segments=[],
+                speaker_map=review.speaker_map,
+                markers=review.markers,
+                bookmarks=review.bookmarks,
+                output_dir=Path(path_str).parent,
+                base_name=review.base_name,
+                formats=review.formats,
+            )
+        except Exception as exc:
+            logger = logging.getLogger(__name__)
+            logger.exception("Speaker-Manager konnte nicht geöffnet werden")
+            show_error(
+                self.root, "Fehler",
+                f"Speaker-Manager konnte nicht geöffnet werden:\n{exc}",
+            )
+```
+
+- [ ] **Step 2: Button im Aktionsbereich ergänzen**
+
+In `action_frame` (gui.py:521-544), nach dem "Beenden"-Button einfügen:
+
+```python
+        ctk.CTkButton(
+            action_frame,
+            text="🎧 Sprecher bearbeiten…",
+            command=self._open_speaker_review,
+            width=200,
+            height=46,
+            fg_color=COLORS["input_bg"],
+            border_width=2,
+            border_color=COLORS["border"],
+            text_color=COLORS["text"],
+        ).grid(row=0, column=3, padx=10)
+```
+
+(Vergibt `column=3` — `column=2` ist für den Batch-Button aus Task 12 reserviert.)
+
+- [ ] **Step 3: Manueller End-to-End-Test**
+
+Run: `python -m bort.gui`, whisperX-Backend, Testaudio transkribieren (erzeugt `.review.json`),
+Speaker-Manager-Popup schließen ohne umzubenennen, dann "🎧 Sprecher bearbeiten…" klicken, die soeben
+erzeugte `.review.json` auswählen.
+Expected: Speaker-Manager öffnet sich erneut mit denselben Segmenten/Sprechern, Umbenennen+Anwenden
+überschreibt das Transkript wie in Task 7 getestet.
+
+- [ ] **Step 4: Commit**
+
+```bash
+cd /home/itiger013/Dokumente/Github/BoRT
+git add src/bort/gui.py
+git commit -m "feat: add reopen flow for post-hoc speaker review"
+```
+
+---
+
+### Task 10: `BatchWindow` — Batch-Scan-Dialog
 
 **Files:**
 - Create: `src/bort/batch_window.py`
@@ -490,10 +1330,11 @@ from typing import TYPE_CHECKING
 
 import customtkinter as ctk
 
-from .batch import PendingItem, scan_pending
+from .batch import PendingItem, is_file_stable, scan_pending
 from .dialogs import show_error, show_info
 from .filedialogs import ask_directory
 from .gui import transcription_worker
+from .markers import MarkerError, load_markers
 from .theme import COLORS
 
 if TYPE_CHECKING:
@@ -515,7 +1356,9 @@ class BatchWindow(ctk.CTkToplevel):
         self.pending: list[PendingItem] = []
         self.log_queue: queue.Queue = queue.Queue()
         self.worker_thread: threading.Thread | None = None
+        self.scan_thread: threading.Thread | None = None
         self._stop_requested = False
+        self._batch_running = False
 
         self.watch_dir_var = ctk.StringVar(
             value=str(parent_app.config.get_path("last_watch_dir") or "")
@@ -530,7 +1373,6 @@ class BatchWindow(ctk.CTkToplevel):
         self.columnconfigure(0, weight=1)
         self.rowconfigure(2, weight=1)
 
-        # --- Sync-Ordner-Zeile ---
         dir_frame = ctk.CTkFrame(self, fg_color=COLORS["card_bg"], corner_radius=14)
         dir_frame.grid(row=0, column=0, sticky="ew", padx=16, pady=(16, 6))
         dir_frame.columnconfigure(1, weight=1)
@@ -546,12 +1388,12 @@ class BatchWindow(ctk.CTkToplevel):
             dir_frame, text="Ordner wählen", command=self._browse_watch_dir,
             width=130, fg_color=COLORS["coral"], hover_color=COLORS["coral_hover"],
         ).grid(row=0, column=2, padx=(0, 10), pady=12)
-        ctk.CTkButton(
+        self.scan_button = ctk.CTkButton(
             dir_frame, text="🔍 Scannen", command=self._on_scan,
             width=110, fg_color=COLORS["coral"], hover_color=COLORS["coral_hover"],
-        ).grid(row=0, column=3, padx=(0, 14), pady=12)
+        )
+        self.scan_button.grid(row=0, column=3, padx=(0, 14), pady=12)
 
-        # --- Ergebnis-Liste ---
         list_frame = ctk.CTkFrame(self, fg_color=COLORS["card_bg"], corner_radius=14)
         list_frame.grid(row=1, column=0, sticky="ew", padx=16, pady=6)
         list_frame.columnconfigure(0, weight=1)
@@ -568,7 +1410,6 @@ class BatchWindow(ctk.CTkToplevel):
         )
         self.pending_text.grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 12))
 
-        # --- Log ---
         log_frame = ctk.CTkFrame(self, fg_color=COLORS["card_bg"], corner_radius=14)
         log_frame.grid(row=2, column=0, sticky="nsew", padx=16, pady=6)
         log_frame.columnconfigure(0, weight=1)
@@ -581,7 +1422,6 @@ class BatchWindow(ctk.CTkToplevel):
         )
         self.log_text.grid(row=0, column=0, sticky="nsew", padx=14, pady=14)
 
-        # --- Aktionen ---
         action_frame = ctk.CTkFrame(self, fg_color="transparent")
         action_frame.grid(row=3, column=0, pady=(6, 16))
         self.process_button = ctk.CTkButton(
@@ -590,11 +1430,19 @@ class BatchWindow(ctk.CTkToplevel):
             hover_color=COLORS["coral_hover"], state="disabled",
         )
         self.process_button.grid(row=0, column=0, padx=10)
-        ctk.CTkButton(
+        self.cancel_button = ctk.CTkButton(
+            action_frame, text="Abbrechen", command=self._on_cancel,
+            width=120, height=42, fg_color="transparent", border_width=2,
+            border_color=COLORS["border"], text_color=COLORS["muted"],
+            state="disabled",
+        )
+        self.cancel_button.grid(row=0, column=1, padx=10)
+        self.close_button = ctk.CTkButton(
             action_frame, text="Schließen", command=self._on_close,
             width=120, height=42, fg_color="transparent", border_width=2,
             border_color=COLORS["border"], text_color=COLORS["muted"],
-        ).grid(row=0, column=1, padx=10)
+        )
+        self.close_button.grid(row=0, column=2, padx=10)
 
     def _browse_watch_dir(self) -> None:
         initial = self.watch_dir_var.get() or None
@@ -611,10 +1459,34 @@ class BatchWindow(ctk.CTkToplevel):
         if not watch_dir_raw:
             show_error(self, "Fehler", "Bitte zuerst einen Sync-Ordner wählen.")
             return
+        if self.scan_thread is not None or self._batch_running:
+            return
+
+        self.scan_button.configure(state="disabled")
+        self.process_button.configure(state="disabled")
+        self.status_label.configure(text="Scanne …")
         watch_dir = Path(watch_dir_raw)
         output_dir = Path(self.parent_app.output_var.get())
 
-        self.pending = scan_pending(watch_dir, output_dir)
+        self.scan_thread = threading.Thread(
+            target=self._run_scan, args=(watch_dir, output_dir), daemon=True,
+        )
+        self.scan_thread.start()
+
+    def _run_scan(self, watch_dir: Path, output_dir: Path) -> None:
+        """Läuft im Hintergrund-Thread: scan_pending() + Stabilitäts-Filter.
+
+        Rührt kein Tk an — Ergebnis geht über die Queue an den Main-Thread.
+        """
+        candidates = scan_pending(watch_dir, output_dir)
+        stable = [item for item in candidates if is_file_stable(item.audio_path)]
+        skipped = len(candidates) - len(stable)
+        self.log_queue.put(("scan_done", stable, skipped))
+
+    def _on_scan_done(self, stable: list[PendingItem], skipped: int) -> None:
+        self.pending = stable
+        self.scan_thread = None
+        self.scan_button.configure(state="normal")
 
         self.pending_text.configure(state="normal")
         self.pending_text.delete("1.0", "end")
@@ -624,79 +1496,177 @@ class BatchWindow(ctk.CTkToplevel):
         self.pending_text.configure(state="disabled")
 
         count = len(self.pending)
-        self.status_label.configure(
-            text=f"{count} unverarbeitete Aufnahme(n) gefunden."
+        status = (
+            f"{count} unverarbeitete Aufnahme(n) gefunden."
             if count
             else "Keine unverarbeiteten Aufnahmen gefunden."
         )
+        if skipped:
+            status += f" ({skipped} noch instabil/wird kopiert, übersprungen)"
+        self.status_label.configure(text=status)
         self.process_button.configure(state="normal" if count else "disabled")
 
     def _on_process_all(self) -> None:
-        if not self.pending or self.worker_thread is not None:
+        if not self.pending or self._batch_running:
             return
-        self.process_button.configure(state="disabled")
+        if not self.parent_app.try_acquire_job():
+            show_error(
+                self, "Fehler",
+                "Es läuft bereits eine Transkription (Einzel-Lauf oder Batch).",
+            )
+            return
+
+        # Params für ALLE Items im Main-Thread bauen (Tk-Zugriff nur hier).
+        built: list[tuple[PendingItem, object]] = []
+        for item in self.pending:
+            params = self.parent_app._build_params(item.audio_path, item.marker_path)
+            built.append((item, params))
+
+        self._batch_running = True
         self._stop_requested = False
+        self.process_button.configure(state="disabled")
+        self.scan_button.configure(state="disabled")
+        self.cancel_button.configure(state="normal")
+
         self.worker_thread = threading.Thread(
-            target=self._run_batch, args=(list(self.pending),), daemon=True,
+            target=self._run_batch, args=(built,), daemon=True,
         )
         self.worker_thread.start()
 
-    def _run_batch(self, items: list[PendingItem]) -> None:
-        total = len(items)
-        for index, item in enumerate(items, start=1):
+    def _run_batch(self, built: list[tuple[PendingItem, object]]) -> None:
+        succeeded = 0
+        failed = 0
+        skipped = 0
+        total = len(built)
+        for index, (item, params) in enumerate(built, start=1):
             if self._stop_requested:
+                skipped += total - index + 1
                 break
             self.log_queue.put(
                 ("batch_item_start", index, total, item.audio_path.name)
             )
-            params = self.parent_app._build_params(item.audio_path, item.marker_path)
+
             if params is None:
+                failed += 1
                 self.log_queue.put(
                     ("batch_item_error", item.audio_path.name, "Ungültige Einstellungen")
                 )
                 continue
+
+            if not item.audio_path.exists():
+                skipped += 1
+                self.log_queue.put(
+                    ("batch_item_skip", item.audio_path.name, "Audio nicht mehr vorhanden")
+                )
+                continue
+            if item.marker_path is not None:
+                try:
+                    load_markers(item.marker_path)
+                except MarkerError as exc:
+                    self.log_queue.put(
+                        (
+                            "batch_item_skip", item.audio_path.name,
+                            f"Marker-Datei ungültig geworden: {exc}",
+                        )
+                    )
+                    skipped += 1
+                    continue
+
             item_queue: queue.Queue = queue.Queue()
             transcription_worker(params, item_queue)
-            outcome = self._drain_item_queue(item_queue)
+            outcome_ok, outcome_msg = self._drain_item_queue(item_queue, index, total)
+            if outcome_ok:
+                succeeded += 1
+            else:
+                failed += 1
             self.log_queue.put(
-                ("batch_item_done", item.audio_path.name, outcome)
+                ("batch_item_done", item.audio_path.name, outcome_msg)
             )
-        self.log_queue.put(("batch_finished", total))
+        self.log_queue.put(("batch_finished", succeeded, failed, skipped))
 
-    def _drain_item_queue(self, item_queue: queue.Queue) -> str:
-        """Liest die Ergebnis-Queue eines einzelnen Transkriptionslaufs aus."""
-        result = "Fehler: unbekannt"
+    def _drain_item_queue(
+        self, item_queue: queue.Queue, index: int, total: int
+    ) -> tuple[bool, str]:
+        """Liest die Ergebnis-Queue eines einzelnen Laufs, reicht log/progress durch."""
+        ok = False
+        message = "Fehler: unbekannt"
         while True:
             try:
                 item = item_queue.get_nowait()
             except queue.Empty:
                 break
-            if item[0] == "done":
-                result = "OK"
-            elif item[0] == "error":
-                result = f"Fehler: {item[1]}"
-        return result
+            kind = item[0]
+            if kind == "log":
+                _, level, msg = item
+                self.log_queue.put(("batch_item_log", index, total, level, msg))
+            elif kind == "progress":
+                percent = item[1]
+                phase = item[2] if len(item) > 2 else ""
+                self.log_queue.put(("batch_item_progress", index, total, percent, phase))
+            elif kind == "done":
+                ok = True
+                message = "OK"
+            elif kind == "error":
+                ok = False
+                message = f"Fehler: {item[1]}"
+        return ok, message
+
+    def _on_cancel(self) -> None:
+        self._stop_requested = True
+        self.cancel_button.configure(state="disabled")
+        self._append_log("Abbruch angefordert — stoppt nach aktuellem Item …")
 
     def _poll_queue(self) -> None:
         try:
             while True:
                 item = self.log_queue.get_nowait()
                 kind = item[0]
-                if kind == "batch_item_start":
+                if kind == "scan_done":
+                    self._on_scan_done(item[1], item[2])
+                elif kind == "batch_item_start":
                     _, index, total, name = item
                     self._append_log(f"[{index}/{total}] Verarbeite {name} …")
+                elif kind == "batch_item_log":
+                    _, index, total, level, msg = item
+                    self._append_log(f"    {level}: {msg}")
+                elif kind == "batch_item_progress":
+                    _, index, total, percent, phase = item
+                    self.status_label.configure(
+                        text=f"[{index}/{total}] {int(percent)}% · {phase}"
+                    )
                 elif kind == "batch_item_done":
                     _, name, outcome = item
                     self._append_log(f"  → {name}: {outcome}")
                 elif kind == "batch_item_error":
                     _, name, reason = item
+                    self._append_log(f"  → {name}: Fehler ({reason})")
+                elif kind == "batch_item_skip":
+                    _, name, reason = item
                     self._append_log(f"  → {name}: übersprungen ({reason})")
                 elif kind == "batch_finished":
-                    total = item[1]
-                    self._append_log(f"Batch abgeschlossen ({total} Datei(en)).")
+                    _, succeeded, failed, skipped = item
+                    self._append_log(
+                        f"Batch abgeschlossen: {succeeded} OK, {failed} Fehler, "
+                        f"{skipped} übersprungen."
+                    )
                     self.worker_thread = None
-                    self.process_button.configure(state="normal")
-                    show_info(self, "Fertig", f"Batch abgeschlossen ({total} Datei(en)).")
+                    self._batch_running = False
+                    self.pending = []
+                    self.pending_text.configure(state="normal")
+                    self.pending_text.delete("1.0", "end")
+                    self.pending_text.configure(state="disabled")
+                    self.status_label.configure(
+                        text="Batch abgeschlossen — erneut scannen für weitere Aufnahmen."
+                    )
+                    self.process_button.configure(state="disabled")
+                    self.scan_button.configure(state="normal")
+                    self.cancel_button.configure(state="disabled")
+                    self.parent_app.release_job()
+                    show_info(
+                        self, "Fertig",
+                        f"Batch abgeschlossen: {succeeded} OK, {failed} Fehler, "
+                        f"{skipped} übersprungen.",
+                    )
         except queue.Empty:
             pass
         finally:
@@ -709,52 +1679,68 @@ class BatchWindow(ctk.CTkToplevel):
         self.log_text.see("end")
 
     def _on_close(self) -> None:
-        self._stop_requested = True
+        if self._batch_running:
+            show_error(
+                self, "Batch läuft noch",
+                "Bitte zuerst 'Abbrechen' klicken und das aktuelle Item abwarten, "
+                "bevor das Fenster geschlossen wird.",
+            )
+            return
         self.destroy()
 ```
 
 **Design-Entscheidungen (bewusst einfach gehalten):**
-- Kein eigenes Settings-UI in `BatchWindow` — nutzt Backend/Modell/Formate/etc., die im Hauptfenster aktuell eingestellt sind (`parent_app._build_params(...)`), analog zum "was im Hauptfenster steht, gilt" statt Einstellungen zu duplizieren.
-- Läuft strikt sequentiell in einem einzigen Hintergrund-Thread (kein Thread-Pool) — passend zur GPU-gebundenen whisperX-Pipeline, die ohnehin keine Parallelverarbeitung erlaubt.
-- Ein Item-Fehler bricht den Batch nicht ab, sondern wird geloggt und übersprungen — sinnvoll bei mehreren Aufnahmen pro Sync (ein defektes File soll nicht die restlichen blockieren).
+- Kein eigenes Settings-UI — nutzt Backend/Modell/Formate, die aktuell im Hauptfenster stehen.
+- Strikt sequentiell in einem Hintergrund-Thread — passend zur GPU-gebundenen whisperX-Pipeline.
+- Ein Item-Fehler bricht den Batch nicht ab, wird geloggt und gezählt.
+- Scan läuft ebenfalls in einem Hintergrund-Thread (wegen der 2-Sekunden-Stabilitätsprüfung pro
+  Kandidat, die sonst die GUI einfrieren würde) — liest aber ebenfalls keine Tk-Variablen, reicht
+  Ergebnisse nur über die Queue zurück.
 
 - [ ] **Step 2: Manueller Smoke-Test**
 
 Run: `cd /home/itiger013/Dokumente/Github/BoRT && python -c "from bort.batch_window import BatchWindow"`
-Expected: kein Fehler (Import-Zyklus-Check: `batch_window.py` importiert aus `gui.py`, `gui.py` importiert `batch_window.py` erst in Task 5 — bis dahin muss dieser Import fehlerfrei funktionieren)
+Expected: kein Fehler.
 
 - [ ] **Step 3: Commit**
 
 ```bash
 cd /home/itiger013/Dokumente/Github/BoRT
 git add src/bort/batch_window.py
-git commit -m "feat: add BatchWindow for scanning and processing pending recordings"
+git commit -m "feat: add BatchWindow with thread-safe scan and sequential processing"
 ```
 
 ---
 
-### Task 5: Batch-Button ins Hauptfenster einhängen
+### Task 11: Batch-Button ins Hauptfenster einhängen
 
 **Files:**
-- Modify: `src/bort/gui.py:521-544` (Aktions-Buttons-Zeile), Import-Block
+- Modify: `src/bort/gui.py:521-544` (Aktions-Buttons-Zeile)
 
-- [ ] **Step 1: Import ergänzen**
+- [ ] **Step 1: `_open_batch_window`-Methode ergänzen**
 
-In `src/bort/gui.py` nach den bestehenden Imports (nicht ganz oben, um Zirkularimport zu vermeiden — `batch_window` importiert `transcription_worker` aus `gui`, daher lokal in der Methode importieren):
-
-Ändere `_open_batch_window` als neue Methode, mit lokalem Import:
+Nach `_open_speaker_review` (Task 9) einfügen:
 
 ```python
     def _open_batch_window(self) -> None:
         """Öffnet das Batch-Scan-Fenster."""
+        if self.job_running:
+            show_error(
+                self.root, "Fehler",
+                "Es läuft bereits eine Transkription (Einzel-Lauf oder Batch).",
+            )
+            return
         from .batch_window import BatchWindow
 
         BatchWindow(self)
 ```
 
+(Der Check hier verhindert nur das ÖFFNEN während eines laufenden Einzel-Laufs; das eigentliche Lock
+für den Batch-LAUF selbst übernimmt `BatchWindow._on_process_all` über `try_acquire_job()`, Task 10.)
+
 - [ ] **Step 2: Button in `action_frame` ergänzen**
 
-In `src/bort/gui.py:521-544`, nach dem "Beenden"-Button (Zeile 544) einen neuen Button einfügen, vor dem schließenden Block:
+Nach dem "Beenden"-Button (gui.py:544) einfügen:
 
 ```python
         ctk.CTkButton(
@@ -770,22 +1756,26 @@ In `src/bort/gui.py:521-544`, nach dem "Beenden"-Button (Zeile 544) einen neuen 
         ).grid(row=0, column=2, padx=10)
 ```
 
-(Der bestehende "Beenden"-Button behält `column=1`; neuer Button erhält `column=2`.)
-
 - [ ] **Step 3: Manueller End-to-End-Test**
 
-Run: `cd /home/itiger013/Dokumente/Github/BoRT && python -m bort.gui`
+Run: `python -m bort.gui`
 
-Schritte:
-1. Zwei Test-Audiodateien (z.B. kurze `.m4a`) in einen leeren Testordner legen, eine davon mit passender `<stem>.json`-Marker-Datei (Android-Format).
-2. Im Hauptfenster ein Ausgabeverzeichnis wählen.
+1. Zwei Test-Audiodateien in einen leeren Testordner legen, eine mit passender `<stem>.json`
+   (Android-Format).
+2. Ausgabeverzeichnis im Hauptfenster wählen.
 3. "📦 Batch verarbeiten…" klicken → Fenster öffnet sich.
-4. Testordner als Sync-Ordner wählen, "🔍 Scannen" klicken → beide Dateien erscheinen in der Liste (eine mit `(+ ...json)`-Hinweis).
-5. "▶ Alle verarbeiten" klicken → Log zeigt beide Dateien nacheinander mit "OK".
-6. Ausgabeverzeichnis prüfen → für beide Dateien liegt ein Transkript im heutigen Datums-Unterordner.
-7. Fenster schließen, erneut "Scannen" im selben Sync-Ordner → Liste ist jetzt leer (`scan_pending` erkennt vorhandenes Output korrekt).
-
-Expected: alle Schritte laufen wie beschrieben ohne Fehlerdialog.
+4. Testordner als Sync-Ordner wählen, "🔍 Scannen" klicken (wartet je Kandidat ~2s für den
+   Stabilitäts-Check) → beide Dateien erscheinen in der Liste.
+5. "▶ Alle verarbeiten" klicken → Log zeigt beide Dateien nacheinander mit "OK", Erfolgs-/Fehlerzahl
+   am Ende korrekt.
+6. Ausgabeverzeichnis prüfen → Transkripte + (bei whisperX-Backend) `.review.json` im
+   Datums-Unterordner.
+7. Erneut "Scannen" im selben Sync-Ordner → Liste ist leer.
+8. Während "Alle verarbeiten" läuft, Fenster schließen versuchen → Fehlermeldung "Batch läuft noch",
+   Fenster bleibt offen. "Abbrechen" klicken, warten bis aktuelles Item fertig, dann schließen →
+   funktioniert.
+9. Während Batch läuft, im Hauptfenster "▶ Transkribieren" klicken → Fehlermeldung "Es läuft bereits
+   eine Transkription".
 
 - [ ] **Step 4: Vollen Testlauf verifizieren**
 
@@ -802,39 +1792,39 @@ git commit -m "feat: wire batch-processing button into main window"
 
 ---
 
-### Task 6: Transfer-Setup dokumentieren (Tailscale+SMB, kein Code)
-
-Reine Dokumentation — Transfer-Weg ist Infrastruktur/Konfiguration auf Handy+PC, kein App-Code betroffen (siehe Design-Spec Abschnitt A).
+### Task 12: Transfer-Setup dokumentieren (Tailscale+SMB, kein Code)
 
 **Files:**
-- Modify: `HANDOVER.md` (neuer Abschnitt, an bestehende Struktur anhängen — exakte Zeilennummer erst beim Ausführen prüfen, da sich die Datei zwischen Spec-Erstellung und Implementierung ändern kann)
+- Modify: `HANDOVER.md` (neuer Abschnitt anhängen)
 
 - [ ] **Step 1: Abschnitt "Sync-Ordner-Setup (Tailscale+SMB)" an `HANDOVER.md` anhängen**
 
 ```markdown
 ## Sync-Ordner-Setup (Tailscale+SMB)
 
-Statt manuellem Google-Drive-Download: BoR (Android) legt Aufnahmen direkt
-auf einer SMB-Freigabe des PCs ab, erreichbar über Tailscale.
+Statt manuellem Google-Drive-Download: BoR (Android) legt Aufnahmen direkt auf einer SMB-Freigabe
+des PCs ab, erreichbar über Tailscale.
 
-1. **PC:** Samba-Freigabe auf einen Zielordner einrichten (dieser Ordner
-   ist der "Sync-Ordner", der in BoRT unter "📦 Batch verarbeiten…" als
-   Sync-Ordner ausgewählt wird).
-2. **Tailscale:** auf PC und Handy installieren, gleiches Tailnet.
+1. **PC:** Samba-Freigabe auf einen Zielordner einrichten (dieser Ordner ist der "Sync-Ordner", der
+   in BoRT unter "📦 Batch verarbeiten…" ausgewählt wird). Least-privilege einrichten:
+   - dedizierter Samba-Benutzer, kein Gastzugriff (`guest ok = no`)
+   - Freigabe nur lesbar/schreibbar für diesen Benutzer, keine anderen lokalen Nutzer
+   - Samba-Port (445) nur auf dem Tailscale-Interface binden bzw. per Firewall auf das
+     Tailnet-Subnetz beschränken, nicht auf das normale LAN/Internet exponieren
+2. **Tailscale:** auf PC und Handy installieren, gleiches Tailnet, Tailnet-ACLs so setzen, dass nur
+   das Handy-Gerät auf den SMB-Port des PCs zugreifen darf.
 3. **Handy (BoR):** in den BoR-Einstellungen als SAF-Zielordner
-   `\\<pc-tailscale-ip>\<freigabename>` wählen (Android-Stock-Dateien-App
-   unterstützt SMB-Netzwerkspeicher ab Android 10; falls nicht ausreichend,
-   Fallback-App wie CX File Explorer nutzen).
-4. Der bestehende BoR-`Mover` kopiert fertige Aufnahme-Paare automatisch
-   dorthin (bei Recording-Stop/App-Start/Library-Open) — kein BoR-Code
-   geändert.
+   `\\<pc-tailscale-ip>\<freigabename>` wählen (Android-Stock-Dateien-App unterstützt
+   SMB-Netzwerkspeicher ab Android 10; falls nicht ausreichend, Fallback-App wie CX File Explorer
+   nutzen).
+4. Der bestehende BoR-`Mover` kopiert fertige Aufnahme-Paare automatisch dorthin (bei
+   Recording-Stop/App-Start/Library-Open) — kein BoR-Code geändert.
 
-**Bekanntes Risiko:** SMB über VPN-Tunnel bei Verbindungsabbruch während
-des Schreibens. BoRs Mover verschiebt nur bereits abgeschlossene
-Aufnahme-Paare (aktive Aufnahme bleibt lokal) — ein Abbruch mitten im
-Kopiervorgang einer bereits fertigen Datei wurde nicht getestet; bei
-Auffälligkeiten (unvollständige Dateien im Sync-Ordner) zuerst dort
-prüfen, bevor BoR-Code angefasst wird.
+**Bekanntes Risiko:** SMB über VPN-Tunnel bei Verbindungsabbruch während des Schreibens. BoRTs
+Batch-Scan prüft jede Kandidatendatei per Zwei-Sample-Stabilitätscheck (Größe+mtime im Abstand von
+2s), bevor sie als "bereit" gilt — verringert das Risiko, eine Teilkopie zu verarbeiten, eliminiert es
+aber nicht vollständig unter echter Netzwerklast. Bei Auffälligkeiten (unvollständige Dateien im
+Sync-Ordner) zuerst dort prüfen, bevor BoR-Code angefasst wird.
 ```
 
 - [ ] **Step 2: Commit**
@@ -849,9 +1839,12 @@ git commit -m "docs: document Tailscale+SMB sync-folder setup for batch handoff"
 
 ## Spec-Abdeckung (Selbst-Review)
 
-- Abschnitt A (Tailscale+SMB): Task 6 (Doku, kein Code — wie im Design festgelegt).
-- Abschnitt B (`scan_pending`): Task 2.
-- Abschnitt C (Batch-UI): Task 4 + 5.
-- Abschnitt D (Nachbearbeitung bleibt manuell): keine Task nötig — unverändert.
-- Test-Pflicht (`scan_pending` pure Funktion): Task 2, Step 1.
-- Zusätzlich identifizierter Bedarf (nicht im ursprünglichen Spec-Text, aber zur Umsetzung nötig): Task 1 (Marker-Suche-Extraktion) und Task 3 (`_build_params`-Extraktion) — beides Voraussetzung dafür, dass Batch-Modus dieselbe Logik wie die Einzeldatei-Verarbeitung nutzt, ohne sie zu duplizieren (DRY).
+- Transfer (Tailscale+SMB): Task 12 (Doku, kein Code).
+- `scan_pending`/Stabilität/„bereits verarbeitet"-Korrektheit: Task 3.
+- Batch-UI, Thread-Sicherheit, Job-Lock, sicheres Schließen, ehrliche Zusammenfassung: Task 5, 10, 11.
+- Speaker-Review-Sidecar + Reopen-Flow (Nutzer-Entscheidung nach Codex-Runde 2): Task 2, 6, 7, 8, 9.
+- Overwrite-Fix für Sprecher-Umbenennung (Codex-Runde 3, betrifft auch bestehenden Live-Rename-Bug):
+  Task 2, 7.
+- Alle in PLAN.md unter "Key decisions" dokumentierten, bewusst abgelehnten Punkte (Stem-Kollision
+  zwischen Audio-Endungen, keine Parallelverarbeitung) sind NICHT Teil dieses Task-Plans — siehe
+  PLAN.md „Out of scope" für die Begründung.
