@@ -139,12 +139,6 @@ def _run_whisperx(
     except RuntimeError as exc:
         raise WhisperXError(str(exc)) from exc
 
-    if proc.returncode != 0:
-        raise WhisperXError(
-            f"whisperX-Backend Fehler (Code {proc.returncode}):\n"
-            f"{stderr_data.strip()}"
-        )
-
     # stdout may contain stray log lines before the JSON document. Find the
     # first '{' and parse from there to be robust against stdout pollution.
     json_start = stdout_data.find("{")
