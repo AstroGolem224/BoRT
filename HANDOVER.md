@@ -157,3 +157,14 @@ uv run bort /home/itiger013/Documents/unbenannt.mp3 \
 cd /home/itiger013/projects/whisper-tagger
 ./run.sh python whisperx_transcribe.py /path/to/audio.m4a --language de --max-speakers 2
 ```
+
+## Sync-Ordner-Setup (Tailscale+SMB)
+
+Statt manuellem Google-Drive-Download legt BoR (Android) Aufnahmen direkt auf einer per Tailscale erreichbaren SMB-Freigabe des PCs ab.
+
+1. **PC:** Samba-Freigabe für den in BoRT unter „📦 Batch verarbeiten…“ gewählten Sync-Ordner einrichten: dedizierter Samba-Benutzer, kein Gastzugriff (`guest ok = no`), Zugriff ausschließlich für diesen Benutzer. Port 445 nur ans Tailscale-Interface binden bzw. per Firewall auf das Tailnet-Subnetz beschränken.
+2. **Tailscale:** Auf PC und Handy im selben Tailnet installieren; ACLs so setzen, dass nur das Handy auf SMB des PCs zugreifen darf.
+3. **Handy (BoR):** Als SAF-Zielordner `\\<pc-tailscale-ip>\<freigabename>` wählen. Androids Dateien-App unterstützt SMB ab Android 10; falls nötig CX File Explorer verwenden.
+4. Der bestehende BoR-`Mover` kopiert fertige Paare dorthin; es ist keine BoR-Code-Änderung nötig.
+
+**Bekanntes Risiko:** Bei einem SMB/VPN-Verbindungsabbruch während des Schreibens kann eine Teilkopie entstehen. BoRT prüft Größe und mtime jeder Kandidatendatei zweimal im Abstand von zwei Sekunden, bevor sie verarbeitet wird. Das verringert, eliminiert das Risiko unter echter Netzwerklast aber nicht vollständig.

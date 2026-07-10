@@ -1,6 +1,5 @@
 """CustomTkinter-GUI für die Transkriptions-App."""
 
-import json
 import logging
 import platform
 import queue
@@ -16,7 +15,7 @@ from .audio import SUPPORTED_AUDIO_EXTS, AudioError, convert_to_wav, is_supporte
 from .config import Config
 from .dialogs import show_error, show_info
 from .filedialogs import ask_directory, ask_open_file
-from .markers import Bookmark, MarkerError, load_bookmarks, load_markers
+from .markers import Bookmark, MarkerError, find_companion_marker, load_bookmarks, load_markers
 from .speaker_manager import SpeakerManagerWindow
 from .speakers import (
     MarkerSpeakerResolver,
@@ -47,22 +46,6 @@ BACKENDS = {
     "whisperX (GPU + Diarization)": "whisperx",
 }
 WHISPERX_MODELS = ["large-v3", "large-v2", "medium", "small", "base", "tiny"]
-
-
-def _looks_like_marker_file(path: Path) -> bool:
-    """Prüft heuristisch, ob ``path`` eine lesbare Marker-JSON ist.
-
-    Verhindert, dass zufällige ``<stem>.json``-Dateien ohne Marker-Bezug
-    (z.B. andere Metadaten) als Marker übernommen werden. Akzeptiert werden
-    JSON-Objekte mit einem ``markers``-Feld (Liste) – das deckt sowohl das
-    Android-Format als auch das BoRT-Format ab.
-    """
-    try:
-        with path.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return False
-    return isinstance(data, dict) and isinstance(data.get("markers"), list)
 
 
 @dataclass
@@ -101,19 +84,19 @@ class QueueLogHandler(logging.Handler):
             self.handleError(record)
 
 
-def _setup_worker_logging(log_queue: queue.Queue, verbose: bool) -> None:
-    """Richtet Logging im Worker-Thread so ein, dass Meldungen in die Queue gehen."""
+def _setup_worker_logging(log_queue: queue.Queue, verbose: bool) -> tuple[logging.Handler, int]:
+    """Hängt einen Queue-Handler an, ohne bestehende Handler zu entfernen."""
     root = logging.getLogger()
-    root.handlers.clear()
+    previous_level = root.level
     handler = QueueLogHandler(log_queue)
     handler.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
     root.addHandler(handler)
     root.setLevel(logging.DEBUG if verbose else logging.INFO)
+    return handler, previous_level
 
 
 def transcription_worker(params: TranscriptionParams, log_queue: queue.Queue) -> None:
     """Läuft im Hintergrund-Thread und führt die Transkription aus."""
-    _setup_worker_logging(log_queue, params.verbose)
     logger = logging.getLogger(__name__)
 
     # Bookmarks aus der Android-Marker-Datei laden (nur whisperX-Pfad)
@@ -133,6 +116,7 @@ def transcription_worker(params: TranscriptionParams, log_queue: queue.Queue) ->
     def _progress_cb(percent: float, phase: str) -> None:
         log_queue.put(("progress", percent, phase))
 
+    handler, previous_level = _setup_worker_logging(log_queue, params.verbose)
     try:
         if params.backend == "whisperx":
             # --- whisperX-Pfad (GPU + Diarization) ---
@@ -159,9 +143,7 @@ def transcription_worker(params: TranscriptionParams, log_queue: queue.Queue) ->
             logger.info("Erkannte Sprache: %s", wx_result.language or "unbekannt")
 
             if params.auto_markers and not params.no_diarize:
-                marker_path = (
-                    params.output_dir / f"{params.audio_path.stem}.markers.json"
-                )
+                marker_path = params.output_dir / f"{params.audio_path.stem}.markers.json"
                 save_whisperx_markers(wx_result, marker_path)
                 logger.info("Auto-Marker gespeichert: %s", marker_path)
 
@@ -177,9 +159,7 @@ def transcription_worker(params: TranscriptionParams, log_queue: queue.Queue) ->
         else:
             # --- whisper.cpp-Pfad (ursprünglich) ---
             if not params.model_path:
-                raise TranscriptionError(
-                    "Modell-Pfad fehlt (für whisper.cpp-Backend erforderlich)"
-                )
+                raise TranscriptionError("Modell-Pfad fehlt (für whisper.cpp-Backend erforderlich)")
             logger.info("Konvertiere Audio: %s", params.audio_path)
             _progress_cb(0.0, "Konvertiere Audio")
             wav_path = convert_to_wav(
@@ -212,25 +192,43 @@ def transcription_worker(params: TranscriptionParams, log_queue: queue.Queue) ->
                 speaker_map, markers = load_markers(params.marker_path)
                 resolver = MarkerSpeakerResolver(markers, speaker_map)
             else:
-                logger.info(
-                    "Keine Marker-Datei angegeben – verwende Fallback-Sprecher."
-                )
+                logger.info("Keine Marker-Datei angegeben – verwende Fallback-Sprecher.")
                 resolver = PlaceholderSpeakerResolver()
 
             speaker_segments = resolver.resolve(result.segments)
 
         _progress_cb(95.0, "Speichere")
+        review_data = None
+        if params.backend == "whisperx":
+            review_data = {
+                "schema_version": 1,
+                "audio_path": str(params.audio_path),
+                "segments": [
+                    {"start": s.start, "end": s.end, "speaker": s.speaker, "text": s.text}
+                    for s in speaker_segments
+                ],
+                "speaker_map": dict(wx_speaker_map) if wx_speaker_map else {},
+                "markers": [
+                    {"start": m.start, "end": m.end, "speaker": m.speaker}
+                    for m in (wx_markers or [])
+                ],
+                "bookmarks": [
+                    {"time": b.time, "label": b.label, "type": b.type, "color": b.color}
+                    for b in bookmarks
+                ],
+                "base_name": params.audio_path.stem,
+                "formats": params.formats,
+            }
         output_paths = write_outputs(
             segments=speaker_segments,
             output_dir=params.output_dir,
             base_name=params.audio_path.stem,
             formats=params.formats,
             bookmarks=bookmarks or None,
+            review_data=review_data,
         )
 
-        output_location = (
-            output_paths[0].parent if output_paths else params.output_dir
-        )
+        output_location = output_paths[0].parent if output_paths else params.output_dir
         logger.info("Ausgabe gespeichert in %s:", output_location)
         for path in output_paths:
             logger.info("  - %s", path)
@@ -250,6 +248,7 @@ def transcription_worker(params: TranscriptionParams, log_queue: queue.Queue) ->
             "markers": wx_markers,
             "bookmarks": bookmarks,
             "output_dir": params.output_dir,
+            "output_location": output_location,
             "base_name": params.audio_path.stem,
             "formats": params.formats,
         }
@@ -264,6 +263,10 @@ def transcription_worker(params: TranscriptionParams, log_queue: queue.Queue) ->
         log_queue.put(("error", str(exc)))
     except Exception as exc:
         log_queue.put(("error", f"Unerwarteter Fehler: {exc}"))
+    finally:
+        root = logging.getLogger()
+        root.removeHandler(handler)
+        root.setLevel(previous_level)
 
 
 class TranscriptionApp:
@@ -285,6 +288,7 @@ class TranscriptionApp:
         self._on_backend_change(self.backend_display_var.get())
         self.log_queue: queue.Queue = queue.Queue()
         self.worker_thread: threading.Thread | None = None
+        self.job_running = False
         self._audio_trace_id: str | None = None
         # Auto-Load der Begleit-JSON auch beim manuellen Tippen/Einfügen des Pfads.
         self.audio_var.trace_add("write", self._on_audio_var_change)
@@ -358,13 +362,19 @@ class TranscriptionApp:
 
         # Audio
         self.audio_var = ctk.StringVar()
-        self._build_file_row(card_in, row=1, label="Audio-Datei:",
-                             var=self.audio_var, command=self._browse_audio)
+        self._build_file_row(
+            card_in, row=1, label="Audio-Datei:", var=self.audio_var, command=self._browse_audio
+        )
 
         # Marker
         self.marker_var = ctk.StringVar()
-        self._build_file_row(card_in, row=2, label="Marker-JSON (optional):",
-                             var=self.marker_var, command=self._browse_marker)
+        self._build_file_row(
+            card_in,
+            row=2,
+            label="Marker-JSON (optional):",
+            var=self.marker_var,
+            command=self._browse_marker,
+        )
 
         # --- Card 2: Engine ---
         card_eng = ctk.CTkFrame(self.root, fg_color=COLORS["card_bg"], corner_radius=14)
@@ -384,9 +394,7 @@ class TranscriptionApp:
         ctk.CTkLabel(card_eng, text="Backend:", width=180, anchor="w").grid(
             row=1, column=0, sticky="w", padx=18, pady=8
         )
-        self.backend_display_var = ctk.StringVar(
-            value="whisperX (GPU + Diarization)"
-        )
+        self.backend_display_var = ctk.StringVar(value="whisperX (GPU + Diarization)")
         backend_combo = ctk.CTkComboBox(
             card_eng,
             variable=self.backend_display_var,
@@ -409,23 +417,29 @@ class TranscriptionApp:
         ctk.CTkLabel(self.wx_options_frame, text="Max. Sprecher:").grid(
             row=0, column=0, padx=(0, 5)
         )
-        ctk.CTkEntry(self.wx_options_frame, textvariable=self.max_speakers_var,
-                     width=60).grid(row=0, column=1, padx=(0, 20))
+        ctk.CTkEntry(self.wx_options_frame, textvariable=self.max_speakers_var, width=60).grid(
+            row=0, column=1, padx=(0, 20)
+        )
 
         self.min_speakers_var = ctk.StringVar(value="")
         ctk.CTkLabel(self.wx_options_frame, text="Min. Sprecher:").grid(
             row=0, column=2, padx=(0, 5)
         )
-        ctk.CTkEntry(self.wx_options_frame, textvariable=self.min_speakers_var,
-                     width=60).grid(row=0, column=3, padx=(0, 20))
+        ctk.CTkEntry(self.wx_options_frame, textvariable=self.min_speakers_var, width=60).grid(
+            row=0, column=3, padx=(0, 20)
+        )
 
         self.no_diarize_var = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(self.wx_options_frame, text="Ohne Diarization",
-                        variable=self.no_diarize_var).grid(row=0, column=4, padx=8)
+        ctk.CTkCheckBox(
+            self.wx_options_frame, text="Ohne Diarization", variable=self.no_diarize_var
+        ).grid(row=0, column=4, padx=8)
 
         self.auto_markers_var = ctk.BooleanVar(value=True)
-        ctk.CTkCheckBox(self.wx_options_frame, text="Marker automatisch speichern",
-                        variable=self.auto_markers_var).grid(row=0, column=5, padx=8)
+        ctk.CTkCheckBox(
+            self.wx_options_frame,
+            text="Marker automatisch speichern",
+            variable=self.auto_markers_var,
+        ).grid(row=0, column=5, padx=8)
 
         # Sprache & Aufgabe
         ctk.CTkLabel(card_eng, text="Sprache:", width=180, anchor="w").grid(
@@ -481,18 +495,30 @@ class TranscriptionApp:
             row=1, column=0, sticky="w", padx=18, pady=8
         )
         self.output_var = ctk.StringVar(value=str(Path.cwd()))
-        ctk.CTkEntry(card_out, textvariable=self.output_var,
-                     fg_color=COLORS["input_bg"], border_color=COLORS["border"]
-                     ).grid(row=1, column=1, sticky="we", padx=(0, 10), pady=8)
+        ctk.CTkEntry(
+            card_out,
+            textvariable=self.output_var,
+            fg_color=COLORS["input_bg"],
+            border_color=COLORS["border"],
+        ).grid(row=1, column=1, sticky="we", padx=(0, 10), pady=8)
         out_btn_frame = ctk.CTkFrame(card_out, fg_color="transparent")
         out_btn_frame.grid(row=1, column=2, sticky="w", padx=(0, 18), pady=8)
-        ctk.CTkButton(out_btn_frame, text="Ordner wählen", command=self._browse_output,
-                      width=130, fg_color=COLORS["coral"],
-                      hover_color=COLORS["coral_hover"]).grid(
-            row=0, column=0, padx=(0, 6))
-        ctk.CTkButton(out_btn_frame, text="📂 Öffnen", command=self._open_output_dir,
-                      width=100, fg_color=COLORS["input_bg"],
-                      border_color=COLORS["border"]).grid(row=0, column=1)
+        ctk.CTkButton(
+            out_btn_frame,
+            text="Ordner wählen",
+            command=self._browse_output,
+            width=130,
+            fg_color=COLORS["coral"],
+            hover_color=COLORS["coral_hover"],
+        ).grid(row=0, column=0, padx=(0, 6))
+        ctk.CTkButton(
+            out_btn_frame,
+            text="📂 Öffnen",
+            command=self._open_output_dir,
+            width=100,
+            fg_color=COLORS["input_bg"],
+            border_color=COLORS["border"],
+        ).grid(row=0, column=1)
 
         # Formate
         ctk.CTkLabel(card_out, text="Formate:", width=180, anchor="w").grid(
@@ -512,11 +538,13 @@ class TranscriptionApp:
         options_frame = ctk.CTkFrame(card_out, fg_color="transparent")
         options_frame.grid(row=3, column=1, columnspan=2, sticky="w", padx=18, pady=4)
         self.keep_wav_var = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(options_frame, text="WAV behalten",
-                        variable=self.keep_wav_var).grid(row=0, column=0, padx=8)
+        ctk.CTkCheckBox(options_frame, text="WAV behalten", variable=self.keep_wav_var).grid(
+            row=0, column=0, padx=8
+        )
         self.verbose_var = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(options_frame, text="Detaillierte Logs",
-                        variable=self.verbose_var).grid(row=0, column=1, padx=8)
+        ctk.CTkCheckBox(options_frame, text="Detaillierte Logs", variable=self.verbose_var).grid(
+            row=0, column=1, padx=8
+        )
 
         # --- Aktions-Buttons ---
         action_frame = ctk.CTkFrame(self.root, fg_color="transparent")
@@ -536,12 +564,35 @@ class TranscriptionApp:
             action_frame,
             text="Beenden",
             command=self.root.destroy,
-            width=120, height=46,
+            width=120,
+            height=46,
             fg_color="transparent",
             border_width=2,
             border_color=COLORS["border"],
             text_color=COLORS["muted"],
         ).grid(row=0, column=1, padx=10)
+        ctk.CTkButton(
+            action_frame,
+            text="📦 Batch verarbeiten…",
+            command=self._open_batch_window,
+            width=200,
+            height=46,
+            fg_color=COLORS["input_bg"],
+            border_width=2,
+            border_color=COLORS["border"],
+            text_color=COLORS["text"],
+        ).grid(row=0, column=2, padx=10)
+        ctk.CTkButton(
+            action_frame,
+            text="🎧 Sprecher bearbeiten…",
+            command=self._open_speaker_review,
+            width=200,
+            height=46,
+            fg_color=COLORS["input_bg"],
+            border_width=2,
+            border_color=COLORS["border"],
+            text_color=COLORS["text"],
+        ).grid(row=0, column=3, padx=10)
 
         # --- Log-Bereich ---
         log_card = ctk.CTkFrame(self.root, fg_color=COLORS["card_bg"], corner_radius=14)
@@ -549,11 +600,12 @@ class TranscriptionApp:
         log_card.columnconfigure(0, weight=1)
         log_card.rowconfigure(1, weight=1)
 
-        ctk.CTkLabel(log_card, text="📜 Log",
-                     font=ctk.CTkFont(size=16, weight="bold"),
-                     text_color=COLORS["coral"]).grid(
-            row=0, column=0, sticky="w", padx=18, pady=(14, 6)
-        )
+        ctk.CTkLabel(
+            log_card,
+            text="📜 Log",
+            font=ctk.CTkFont(size=16, weight="bold"),
+            text_color=COLORS["coral"],
+        ).grid(row=0, column=0, sticky="w", padx=18, pady=(14, 6))
         self.log_text = ctk.CTkTextbox(
             log_card,
             height=200,
@@ -584,15 +636,12 @@ class TranscriptionApp:
 
         Layout: Col0=Label (180px), Col1=Entry (expand), Col2=Button (fixed).
         """
-        ctk.CTkLabel(parent, text=label, text_color=COLORS["text"],
-                     width=180, anchor="w").grid(
+        ctk.CTkLabel(parent, text=label, text_color=COLORS["text"], width=180, anchor="w").grid(
             row=row, column=0, sticky="w", padx=18, pady=10
         )
-        ctk.CTkEntry(parent, textvariable=var,
-                     fg_color=COLORS["input_bg"],
-                     border_color=COLORS["border"]).grid(
-            row=row, column=1, sticky="we", padx=(0, 10), pady=10
-        )
+        ctk.CTkEntry(
+            parent, textvariable=var, fg_color=COLORS["input_bg"], border_color=COLORS["border"]
+        ).grid(row=row, column=1, sticky="we", padx=(0, 10), pady=10)
         ctk.CTkButton(
             parent,
             text="Durchsuchen",
@@ -610,14 +659,18 @@ class TranscriptionApp:
         """
         self.model_parent = parent
         self.model_row = row
-        self.model_label = ctk.CTkLabel(parent, text="Modell:", width=180, anchor="w",
-                                       text_color=COLORS["text"])
+        self.model_label = ctk.CTkLabel(
+            parent, text="Modell:", width=180, anchor="w", text_color=COLORS["text"]
+        )
         self.model_label.grid(row=row, column=0, sticky="w", padx=18, pady=10)
 
         # whisper.cpp: Datei-Auswahl (Entry + Browse-Button)
         self.model_entry = ctk.CTkEntry(
-            parent, textvariable=self.model_var, width=560,
-            fg_color=COLORS["input_bg"], border_color=COLORS["border"],
+            parent,
+            textvariable=self.model_var,
+            width=560,
+            fg_color=COLORS["input_bg"],
+            border_color=COLORS["border"],
         )
         # Noch nicht gridded – wird bei Backend-Wechsel zu whisper.cpp sichtbar
 
@@ -657,18 +710,24 @@ class TranscriptionApp:
             self.model_entry.grid_remove()
             self.model_browse_btn.grid_remove()
             self.model_combo.grid(
-                row=row, column=1, sticky="w", padx=18, pady=10,
+                row=row,
+                column=1,
+                sticky="w",
+                padx=18,
+                pady=10,
             )
             self.wx_options_frame.grid()
         else:
             self.model_label.configure(text="whisper.cpp Modell:")
             self.model_combo.grid_remove()
             self.model_entry.grid(
-                row=row, column=1, sticky="we", padx=(0, 10), pady=10,
+                row=row,
+                column=1,
+                sticky="we",
+                padx=(0, 10),
+                pady=10,
             )
-            self.model_browse_btn.grid(
-                row=row, column=2, padx=(0, 18), pady=10
-            )
+            self.model_browse_btn.grid(row=row, column=2, padx=(0, 18), pady=10)
             self.wx_options_frame.grid_remove()
 
     def _apply_appearance_mode(self) -> None:
@@ -824,20 +883,13 @@ class TranscriptionApp:
             # Bereits eine gültige Marker-Datei gesetzt – nichts ändern.
             return
 
-        candidates = [
-            audio_path.with_suffix(".json"),
-            audio_path.parent / f"{audio_path.stem}.markers.json",
-        ]
-        for cand in candidates:
-            if not cand.exists():
-                continue
-            if not _looks_like_marker_file(cand):
-                continue
-            self.marker_var.set(str(cand))
-            self.config.set_path("last_marker_path", cand)
-            self.config.set_path("last_marker_dir", cand.parent)
+        found = find_companion_marker(audio_path)
+        if found is not None:
+            self.marker_var.set(str(found))
+            self.config.set_path("last_marker_path", found)
+            self.config.set_path("last_marker_dir", found.parent)
             self.config.save()
-            self._log("INFO", f"Marker-JSON automatisch geladen: {cand.name}")
+            self._log("INFO", f"Marker-JSON automatisch geladen: {found.name}")
             return
         # Keine passende JSON gefunden – ggf. veralteten Eintrag löschen.
         if current and not Path(current).exists():
@@ -891,8 +943,7 @@ class TranscriptionApp:
             show_error(
                 self.root,
                 "Fehler",
-                "Kein Dateimanager gefunden. Bitte öffne den Ordner "
-                f"manuell:\n{output_dir}",
+                f"Kein Dateimanager gefunden. Bitte öffne den Ordner manuell:\n{output_dir}",
             )
 
     def _log(self, level: str, message: str) -> None:
@@ -929,6 +980,17 @@ class TranscriptionApp:
             )
             return None
 
+        marker_path = Path(self.marker_var.get()) if self.marker_var.get() else None
+        if marker_path and not marker_path.exists():
+            show_error(self.root, "Fehler", "Marker-Datei nicht gefunden.")
+            return None
+
+        return self._build_params(audio_path, marker_path)
+
+    def _build_params(
+        self, audio_path: Path, marker_path: Path | None
+    ) -> TranscriptionParams | None:
+        """Baut Parameter aus den aktuellen Engine- und Ausgabe-Einstellungen."""
         backend = BACKENDS[self.backend_display_var.get()]
         model_path: Path | None = None
         whisperx_model = "large-v3"
@@ -939,11 +1001,6 @@ class TranscriptionApp:
                 return None
         else:  # whisperx
             whisperx_model = self.model_combo_var.get() or "large-v3"
-
-        marker_path = Path(self.marker_var.get()) if self.marker_var.get() else None
-        if marker_path and not marker_path.exists():
-            show_error(self.root, "Fehler", "Marker-Datei nicht gefunden.")
-            return None
 
         output_dir = Path(self.output_var.get())
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -991,8 +1048,14 @@ class TranscriptionApp:
         )
 
     def _on_run(self) -> None:
+        if not self.try_acquire_job():
+            show_error(
+                self.root, "Fehler", "Es läuft bereits eine Transkription (Einzel-Lauf oder Batch)."
+            )
+            return
         params = self._validate()
         if params is None:
+            self.release_job()
             return
 
         self._save_config_values(params)
@@ -1041,9 +1104,8 @@ class TranscriptionApp:
                     if done_data:
                         self._log_sources(done_data)
                     self.run_button.configure(state="normal")
-                    self.status_label.configure(
-                        text="● Fertig", text_color=COLORS["success"]
-                    )
+                    self.release_job()
+                    self.status_label.configure(text="● Fertig", text_color=COLORS["success"])
                     self.progress_bar.set(1.0)
                     self.progress_label.configure(text="100%")
                     self.root.after(2000, self._hide_progress)
@@ -1061,9 +1123,8 @@ class TranscriptionApp:
                     _, message = item
                     self._log("ERROR", message)
                     self.run_button.configure(state="normal")
-                    self.status_label.configure(
-                        text="● Fehler", text_color=COLORS["error"]
-                    )
+                    self.release_job()
+                    self.status_label.configure(text="● Fehler", text_color=COLORS["error"])
                     self._hide_progress()
                     show_error(self.root, "Fehler", message)
         except queue.Empty:
@@ -1076,6 +1137,17 @@ class TranscriptionApp:
         self.progress_bar.grid_remove()
         self.progress_label.grid_remove()
 
+    def try_acquire_job(self) -> bool:
+        """Versucht das appweite Job-Lock zu belegen."""
+        if self.job_running:
+            return False
+        self.job_running = True
+        return True
+
+    def release_job(self) -> None:
+        """Gibt das appweite Job-Lock frei (idempotent)."""
+        self.job_running = False
+
     def _open_speaker_manager(self, data: dict) -> None:
         """Öffnet den Speaker-Manager nach erfolgreichem whisperX-Lauf."""
         try:
@@ -1087,7 +1159,7 @@ class TranscriptionApp:
                 speaker_map=data["speaker_map"],
                 markers=data["markers"] or [],
                 bookmarks=data.get("bookmarks") or [],
-                output_dir=data["output_dir"],
+                output_dir=data["output_location"],
                 base_name=data["base_name"],
                 formats=data["formats"],
             )
@@ -1099,6 +1171,51 @@ class TranscriptionApp:
                 "Fehler",
                 f"Speaker-Manager konnte nicht geöffnet werden:\n{exc}",
             )
+
+    def _open_speaker_review(self) -> None:
+        """Öffnet eine gespeicherte Review-Sidecar zur nachträglichen Bearbeitung."""
+        from .speaker_review import ReviewError, load_review
+
+        path_str = ask_open_file(
+            parent=self.root,
+            title="Review-Datei auswählen",
+            filetypes=[("Review-Dateien", "*.review.json"), ("Alle", "*.*")],
+        )
+        if not path_str:
+            return
+        try:
+            review = load_review(Path(path_str))
+        except ReviewError as exc:
+            show_error(self.root, "Fehler", str(exc))
+            return
+        try:
+            SpeakerManagerWindow(
+                parent=self.root,
+                audio_path=review.audio_path,
+                segments=review.segments,
+                raw_segments=[],
+                speaker_map=review.speaker_map,
+                markers=review.markers,
+                bookmarks=review.bookmarks,
+                output_dir=Path(path_str).parent,
+                base_name=review.base_name,
+                formats=review.formats,
+            )
+        except Exception as exc:
+            logger = logging.getLogger(__name__)
+            logger.exception("Speaker-Manager konnte nicht geöffnet werden")
+            show_error(self.root, "Fehler", f"Speaker-Manager konnte nicht geöffnet werden:\n{exc}")
+
+    def _open_batch_window(self) -> None:
+        """Öffnet das Batch-Scan-Fenster."""
+        if self.job_running:
+            show_error(
+                self.root, "Fehler", "Es läuft bereits eine Transkription (Einzel-Lauf oder Batch)."
+            )
+            return
+        from .batch_window import BatchWindow
+
+        BatchWindow(self)
 
 
 def main() -> None:

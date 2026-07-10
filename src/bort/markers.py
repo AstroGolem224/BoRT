@@ -171,9 +171,7 @@ def _load_android_markers(
         try:
             t_ms = float(item["timeMs"])
         except (TypeError, ValueError) as exc:
-            raise MarkerError(
-                f"Android-Marker[{idx}]: timeMs muss eine Zahl sein."
-            ) from exc
+            raise MarkerError(f"Android-Marker[{idx}]: timeMs muss eine Zahl sein.") from exc
         times.append(t_ms / 1000.0)
         labels.append(str(item.get("label") or ""))
 
@@ -195,20 +193,14 @@ def _load_android_markers(
     prev = 0.0
     for t, label in zip(times, labels):
         if t > prev:
-            markers.append(
-                SpeakerMarker(start=prev, end=t, speaker="sprecher001")
-            )
+            markers.append(SpeakerMarker(start=prev, end=t, speaker="sprecher001"))
         prev = t
     # Letztes Intervall bis Audio-Ende
     end = (duration_ms / 1000.0) if duration_ms else prev
     if end > prev:
-        markers.append(
-            SpeakerMarker(start=prev, end=end, speaker="sprecher001")
-        )
+        markers.append(SpeakerMarker(start=prev, end=end, speaker="sprecher001"))
 
-    logger.info(
-        "Android-Marker: %d Bookmarks → %d Intervalle", len(times), len(markers)
-    )
+    logger.info("Android-Marker: %d Bookmarks → %d Intervalle", len(times), len(markers))
     _warn_overlaps(markers)
     return speakers, markers
 
@@ -257,15 +249,10 @@ def save_markers(
     path = Path(path)
     data = {
         "speakers": speakers,
-        "markers": [
-            {"start": m.start, "end": m.end, "speaker": m.speaker}
-            for m in markers
-        ],
+        "markers": [{"start": m.start, "end": m.end, "speaker": m.speaker} for m in markers],
     }
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     logger.info("Marker gespeichert: %s", path)
     return path
 
@@ -333,9 +320,7 @@ def load_bookmarks(path: Path | str) -> list[Bookmark]:
         try:
             t_ms = float(item["timeMs"])
         except (TypeError, ValueError) as exc:
-            raise MarkerError(
-                f"Marker[{idx}]: timeMs muss eine Zahl sein."
-            ) from exc
+            raise MarkerError(f"Marker[{idx}]: timeMs muss eine Zahl sein.") from exc
         label = str(item.get("label") or "")
         btype = str(item.get("type") or "")
         color = str(item.get("color") or "")
@@ -351,3 +336,25 @@ def load_bookmarks(path: Path | str) -> list[Bookmark]:
     bookmarks.sort(key=lambda b: b.time)
     logger.info("Bookmarks geladen: %d aus %s", len(bookmarks), path)
     return bookmarks
+
+
+def _looks_like_marker_file(path: Path) -> bool:
+    """Prüft heuristisch, ob ``path`` eine lesbare Marker-JSON ist."""
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return False
+    return isinstance(data, dict) and isinstance(data.get("markers"), list)
+
+
+def find_companion_marker(audio_path: Path) -> Path | None:
+    """Sucht eine passende Marker-JSON zu einer Audiodatei (gleicher Ordner)."""
+    candidates = [
+        audio_path.with_suffix(".json"),
+        audio_path.parent / f"{audio_path.stem}.markers.json",
+    ]
+    for cand in candidates:
+        if cand.exists() and _looks_like_marker_file(cand):
+            return cand
+    return None

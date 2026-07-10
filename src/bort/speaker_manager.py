@@ -42,9 +42,12 @@ class AudioPlayer:
                     "ffplay",
                     "-nodisp",
                     "-nostats",
-                    "-loglevel", "quiet",
-                    "-ss", f"{start:.3f}",
-                    "-t", f"{duration:.3f}",
+                    "-loglevel",
+                    "quiet",
+                    "-ss",
+                    f"{start:.3f}",
+                    "-t",
+                    f"{duration:.3f}",
                     "-autoexit",
                     str(self.audio_path),
                 ],
@@ -132,7 +135,7 @@ class SpeakerManagerWindow(ctk.CTkToplevel):
         ctk.CTkLabel(
             header,
             text="Klicke ▶ um ein Beispiel-Segment anzuhören, "
-                 "benenne die Sprecher um und klicke auf „Übernehmen“.",
+            "benenne die Sprecher um und klicke auf „Übernehmen“.",
             text_color=COLORS["muted"],
             font=ctk.CTkFont(size=13),
         ).grid(row=1, column=0, sticky="w", padx=20, pady=(0, 16))
@@ -173,35 +176,38 @@ class SpeakerManagerWindow(ctk.CTkToplevel):
             row = idx + 1
             # Original
             ctk.CTkLabel(
-                scroll, text=spk_id, text_color=COLORS["muted"],
+                scroll,
+                text=spk_id,
+                text_color=COLORS["muted"],
             ).grid(row=row, column=0, padx=8, pady=8, sticky="w")
 
             # Neuer Name (editierbar)
             name_var = ctk.StringVar(value=spk_name)
             self.name_vars[spk_id] = name_var
             ctk.CTkEntry(
-                scroll, textvariable=name_var, width=220,
-                fg_color=COLORS["input_bg"], border_color=COLORS["border"],
+                scroll,
+                textvariable=name_var,
+                width=220,
+                fg_color=COLORS["input_bg"],
+                border_color=COLORS["border"],
             ).grid(row=row, column=1, padx=8, pady=8, sticky="we")
 
             # Anzahl Segmente
             n_segs = sum(1 for s in self.segments if s.speaker == spk_name)
             ctk.CTkLabel(
-                scroll, text=str(n_segs), text_color=COLORS["text"],
+                scroll,
+                text=str(n_segs),
+                text_color=COLORS["text"],
             ).grid(row=row, column=2, padx=8, pady=8, sticky="w")
 
             # Beispiel-Segment
-            example = next(
-                (s for s in self.segments if s.speaker == spk_name), None
-            )
+            example = next((s for s in self.segments if s.speaker == spk_name), None)
             if example:
                 btn = ctk.CTkButton(
                     scroll,
                     text="▶ Abspielen",
                     width=130,
-                    command=self._make_play_cmd(
-                        spk_id, example.start, example.end
-                    ),
+                    command=self._make_play_cmd(spk_id, example.start, example.end),
                     fg_color=COLORS["coral"],
                     hover_color=COLORS["coral_hover"],
                 )
@@ -213,13 +219,16 @@ class SpeakerManagerWindow(ctk.CTkToplevel):
                 if len(example.text) > 70:
                     preview += "…"
                 ctk.CTkLabel(
-                    scroll, text=f"„{preview}“",
+                    scroll,
+                    text=f"„{preview}“",
                     text_color=COLORS["muted"],
                     font=ctk.CTkFont(size=12),
                 ).grid(row=row, column=4, padx=8, pady=8, sticky="w")
             else:
                 ctk.CTkLabel(
-                    scroll, text="–", text_color=COLORS["muted"],
+                    scroll,
+                    text="–",
+                    text_color=COLORS["muted"],
                 ).grid(row=row, column=3, padx=8, pady=8, sticky="w")
 
         # --- Aktions-Buttons ---
@@ -229,7 +238,8 @@ class SpeakerManagerWindow(ctk.CTkToplevel):
         ctk.CTkButton(
             action,
             text="Schließen",
-            width=120, height=44,
+            width=120,
+            height=44,
             fg_color="transparent",
             border_width=2,
             border_color=COLORS["border"],
@@ -240,7 +250,8 @@ class SpeakerManagerWindow(ctk.CTkToplevel):
         ctk.CTkButton(
             action,
             text="✓  Übernehmen & Transkript aktualisieren",
-            width=320, height=44,
+            width=320,
+            height=44,
             font=ctk.CTkFont(size=14, weight="bold"),
             fg_color=COLORS["coral"],
             hover_color=COLORS["coral_hover"],
@@ -249,8 +260,10 @@ class SpeakerManagerWindow(ctk.CTkToplevel):
 
     def _make_play_cmd(self, spk_id: str, start: float, end: float):
         """Erzeugt eine Play-Callback-Funktion für einen Sprecher."""
+
         def _cmd() -> None:
             self._toggle_play(spk_id, start, end)
+
         return _cmd
 
     def _toggle_play(self, spk_id: str, start: float, end: float) -> None:
@@ -266,16 +279,19 @@ class SpeakerManagerWindow(ctk.CTkToplevel):
         self._current_playing = {spk_id}
         self.player.play_segment(start, end)
         self.play_buttons[spk_id].configure(text="⏹ Stop")
-        threading.Thread(
-            target=self._watch_playback, args=(spk_id,), daemon=True
-        ).start()
+        threading.Thread(target=self._watch_playback, args=(spk_id,), daemon=True).start()
 
     def _watch_playback(self, spk_id: str) -> None:
         """Wartet bis Wiedergabe endet und setzt Button zurück."""
         while self.player.is_playing():
             time.sleep(0.1)
-        self.after(0, lambda: self.play_buttons.get(spk_id) and
-                   self.play_buttons[spk_id].configure(text="▶ Abspielen"))
+        self.after(
+            0,
+            lambda: (
+                self.play_buttons.get(spk_id)
+                and self.play_buttons[spk_id].configure(text="▶ Abspielen")
+            ),
+        )
 
     def _on_apply(self) -> None:
         """Wendet die Umbenennung an und schreibt das Transkript neu."""
@@ -287,27 +303,47 @@ class SpeakerManagerWindow(ctk.CTkToplevel):
             new_map[spk_id] = new_name
 
         old_to_new: dict[str, str] = {
-            self.speaker_map[spk_id]: new_map[spk_id]
-            for spk_id in self.speaker_map
+            self.speaker_map[spk_id]: new_map[spk_id] for spk_id in self.speaker_map
         }
         updated_segments: list[SpeakerSegment] = []
         for seg in self.segments:
             updated_segments.append(
                 SpeakerSegment(
-                    start=seg.start, end=seg.end,
+                    start=seg.start,
+                    end=seg.end,
                     speaker=old_to_new.get(seg.speaker, seg.speaker),
                     text=seg.text,
                 )
             )
         updated_markers = [
             SpeakerMarker(
-                start=m.start, end=m.end,
+                start=m.start,
+                end=m.end,
                 speaker=old_to_new.get(m.speaker, m.speaker),
             )
             for m in self.markers
         ]
         self.speaker_map = new_map
         self.markers = updated_markers
+
+        review_data = {
+            "schema_version": 1,
+            "audio_path": str(self.audio_path),
+            "segments": [
+                {"start": s.start, "end": s.end, "speaker": s.speaker, "text": s.text}
+                for s in updated_segments
+            ],
+            "speaker_map": dict(new_map),
+            "markers": [
+                {"start": m.start, "end": m.end, "speaker": m.speaker} for m in updated_markers
+            ],
+            "bookmarks": [
+                {"time": b.time, "label": b.label, "type": b.type, "color": b.color}
+                for b in self.bookmarks
+            ],
+            "base_name": self.base_name,
+            "formats": self.formats,
+        }
 
         try:
             output_paths = write_outputs(
@@ -316,10 +352,10 @@ class SpeakerManagerWindow(ctk.CTkToplevel):
                 base_name=self.base_name,
                 formats=self.formats,
                 bookmarks=self.bookmarks or None,
+                review_data=review_data,
+                overwrite=True,
             )
-            location = (
-                output_paths[0].parent if output_paths else self.output_dir
-            )
+            location = output_paths[0].parent if output_paths else self.output_dir
             show_info(
                 self,
                 "Fertig",

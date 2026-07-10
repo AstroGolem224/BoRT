@@ -1,6 +1,7 @@
 """Ausgabeformate: Text, Markdown, CSV/TSV (optional mit Bookmarks)."""
 
 import csv
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -46,10 +47,7 @@ def write_text(
             for kind, item in _merge_bookmarks(segments, bookmarks):
                 if kind == "bookmark":
                     bm: Bookmark = item  # type: ignore[assignment]
-                    f.write(
-                        f"[{_format_time(bm.time)}] "
-                        f"{BOOKMARK_INDICATOR} {bm.display}\n"
-                    )
+                    f.write(f"[{_format_time(bm.time)}] {BOOKMARK_INDICATOR} {bm.display}\n")
                 else:
                     seg: SpeakerSegment = item  # type: ignore[assignment]
                     start = _format_time(seg.start)
@@ -73,8 +71,7 @@ def write_markdown(
                 if kind == "bookmark":
                     bm: Bookmark = item  # type: ignore[assignment]
                     f.write(
-                        f"**{_format_time(bm.time)}** "
-                        f"{BOOKMARK_INDICATOR} **{bm.display}**\n\n"
+                        f"**{_format_time(bm.time)}** {BOOKMARK_INDICATOR} **{bm.display}**\n\n"
                     )
                 else:
                     seg: SpeakerSegment = item  # type: ignore[assignment]
@@ -88,10 +85,7 @@ def write_markdown(
                 if seg.speaker != current_speaker:
                     f.write(f"\n## {seg.speaker}\n\n")
                     current_speaker = seg.speaker
-                f.write(
-                    f"**{_format_time(seg.start)} – {_format_time(seg.end)}** "
-                    f"{seg.text}\n\n"
-                )
+                f.write(f"**{_format_time(seg.start)} – {_format_time(seg.end)}** {seg.text}\n\n")
 
 
 def write_csv(
@@ -152,9 +146,7 @@ def _unique_base_name(output_dir: Path, base_name: str, formats: list[str]) -> s
     """Findet einen Dateinamen, der keine bestehenden Ausgabedateien überschreibt."""
     candidate = base_name
     counter = 0
-    while any(
-        (output_dir / f"{candidate}{FORMATS[fmt][0]}").exists() for fmt in formats
-    ):
+    while any((output_dir / f"{candidate}{FORMATS[fmt][0]}").exists() for fmt in formats):
         counter += 1
         candidate = f"{base_name}_{counter}"
     return candidate
@@ -174,32 +166,55 @@ def write_outputs(
     base_name: str,
     formats: list[str],
     bookmarks: list[Bookmark] | None = None,
+    review_data: dict | None = None,
+    overwrite: bool = False,
 ) -> list[Path]:
     """Schreibt die gewünschten Ausgabeformate, optional mit Bookmarks.
 
     Args:
         segments: Sprechersegmente.
-        output_dir: Zielverzeichnis (Elternverzeichnis für Datumsordner).
+        output_dir: Zielverzeichnis. Bei ``overwrite=False`` das Elternverzeichnis
+            für einen Datums-Unterordner, bei ``overwrite=True`` das exakte Ziel.
         base_name: Basisname für die Ausgabedateien.
         formats: Liste der gewünschten Formate ('txt', 'md', 'csv', 'tsv').
         bookmarks: Optionale Bookmarks aus der Android-Partner-App.
+        review_data: Optionales Speaker-Review-Sidecar-Dict.
+        overwrite: Überschreibt exakt ``base_name`` in ``output_dir``.
 
     Returns:
-        Liste der erzeugten Dateipfade.
+        Liste der erzeugten Dateipfade (inkl. Review-Sidecar, falls vorhanden).
     """
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    date_dir = _date_subdir(output_dir)
-    unique_base = _unique_base_name(date_dir, base_name, formats)
+    if overwrite:
+        date_dir = output_dir
+        unique_base = base_name
+    else:
+        date_dir = _date_subdir(output_dir)
+        unique_base = _unique_base_name(date_dir, base_name, formats)
 
-    written: list[Path] = []
     for fmt in formats:
         if fmt not in FORMATS:
             raise ValueError(f"Unbekanntes Format: {fmt}. Möglich: {list(FORMATS)}")
-        suffix, writer = FORMATS[fmt]
-        path = date_dir / f"{unique_base}{suffix}"
-        writer(segments, path, bookmarks=bookmarks)
-        written.append(path)
+
+    written: list[Path] = []
+    try:
+        if review_data is not None:
+            normalized_review_data = {**review_data, "base_name": unique_base}
+            review_path = date_dir / f"{unique_base}.review.json"
+            with review_path.open("w", encoding="utf-8") as f:
+                json.dump(normalized_review_data, f, indent=2, ensure_ascii=False)
+            written.append(review_path)
+
+        for fmt in formats:
+            suffix, writer = FORMATS[fmt]
+            path = date_dir / f"{unique_base}{suffix}"
+            writer(segments, path, bookmarks=bookmarks)
+            written.append(path)
+    except Exception:
+        for path in written:
+            path.unlink(missing_ok=True)
+        raise
 
     return written
