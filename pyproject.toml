@@ -26,6 +26,9 @@ classifiers = [
 dependencies = [
     "customtkinter>=5.0",
     "pillow>=12.3.0",
+    "pycairo",
+    "PyGObject",
+    "pywebview",
 ]
 
 [project.optional-dependencies]
@@ -41,6 +44,9 @@ bort-gui = "bort.gui:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+bort = ["web/*.html", "web/*.css", "web/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

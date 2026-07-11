@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <title>BoR Transcriber</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="Navigation">
+      <div class="brand"><span class="brand-mark">B</span><span>BoR Transcriber</span></div>
+      <nav>
+        <button class="nav-item active" data-view="transcribe">Transkribieren</button>
+        <button class="nav-item" data-view="speakers">Sprecher</button>
+        <button class="nav-item" data-view="batch">Batch</button>
+      </nav>
+      <p class="sidebar-foot">Lokale Transkription</p>
+    </aside>
+    <main>
+      <section id="transcribe" class="view active" aria-labelledby="transcribe-title">
+        <header><h1 id="transcribe-title">Transkribieren</h1><p>Audio auswählen und lokal verarbeiten.</p></header>
+        <p id="status" class="status" role="status">Bereit.</p>
+        <div class="form-grid">
+          <div class="card files-card">
+            <h2>Dateien</h2>
+            <label>Audio-Datei <span class="required">*</span><span class="picker"><input id="audio-path" readonly><button id="pick-audio" type="button">Auswählen</button></span></label>
+            <label>Marker-Datei <span class="muted">optional</span><span class="picker"><input id="marker-path" readonly><button id="pick-marker" type="button">Auswählen</button></span></label>
+            <label>Ausgabeordner <span class="required">*</span><span class="picker"><input id="output-path" readonly><button id="pick-output" type="button">Auswählen</button></span></label>
+          </div>
+          <div class="card">
+            <h2>Transkription</h2>
+            <div class="two-cols"><label>Backend<select id="backend"><option value="whispercpp">whisper.cpp (CPU)</option><option value="whisperx">whisperX (GPU + Diarization)</option></select></label><label>Sprache<select id="language"><option value="auto">Automatisch</option><option value="de">Deutsch</option><option value="en">Englisch</option><option value="fr">Französisch</option><option value="es">Spanisch</option><option value="it">Italienisch</option><option value="pt">Portugiesisch</option><option value="nl">Niederländisch</option><option value="pl">Polnisch</option><option value="ru">Russisch</option><option value="zh">Chinesisch</option><option value="ja">Japanisch</option></select></label></div>
+            <div id="whispercpp-options"><label>GGML-Modell <span class="required">*</span><span class="picker"><input id="model-path" readonly><button id="pick-model" type="button">Auswählen</button></span></label><label>Aufgabe<select id="task"><option value="transcribe">Originalsprache beibehalten</option><option value="translate">Nach Englisch übersetzen</option></select></label></div>
+            <div id="whisperx-options" hidden><div class="two-cols"><label>WhisperX-Modell<select id="whisperx-model"><option>large-v3</option><option>large-v2</option><option>medium</option><option>small</option><option>base</option><option>tiny</option></select></label><label>Aufgabe<select id="whisperx-task" disabled><option>Originalsprache beibehalten</option></select></label></div><div class="two-cols"><label>Min. Sprecher<input id="min-speakers" type="number" min="1" inputmode="numeric"></label><label>Max. Sprecher<input id="max-speakers" type="number" min="1" inputmode="numeric"></label></div></div>
+          </div>
+          <div class="card options-card">
+            <h2>Ausgabe &amp; Optionen</h2>
+            <fieldset><legend>Formate <span class="required">*</span></legend><label class="check"><input type="checkbox" name="format" value="txt" checked> TXT</label><label class="check"><input type="checkbox" name="format" value="md" checked> Markdown</label><label class="check"><input type="checkbox" name="format" value="csv" checked> CSV</label><label class="check"><input type="checkbox" name="format" value="tsv" checked> TSV</label></fieldset>
+            <label class="check"><input id="keep-wav" type="checkbox"> WAV behalten</label><label class="check"><input id="verbose" type="checkbox"> Ausführliches Protokoll</label><div id="diarize-options"><label class="check"><input id="no-diarize" type="checkbox"> Keine Sprechertrennung</label><label class="check"><input id="auto-markers" type="checkbox" checked> Marker automatisch speichern</label></div>
+          </div>
+        </div>
+        <div class="card run-card"><div class="progress-track" aria-label="Fortschritt"><div id="progress-bar"></div></div><div class="progress-line"><span id="progress-label">Bereit</span><span id="progress-value">0 %</span></div><button id="start" class="primary" type="button">Transkription starten</button></div>
+        <div class="card logs-card"><h2>Protokoll</h2><pre id="log" aria-live="polite"></pre></div>
+        <div id="preview" class="card preview" hidden><h2>Vorschau</h2><p id="output-location"></p><div id="segments"></div></div>
+      </section>
+      <section id="speakers" class="view placeholder"><h1>Sprecher</h1><p>Kommt in Phase 2.</p></section>
+      <section id="batch" class="view placeholder"><h1>Batch</h1><p>Kommt in Phase 2.</p></section>
+    </main>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>
