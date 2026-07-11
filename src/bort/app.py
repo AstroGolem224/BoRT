@@ -15,12 +15,21 @@ import gi
 import webview
 
 from .config import Config
+from .controller.batch import BatchController
 from .controller.jobs import (
     JobController,
     TranscriptionSettings,
     build_params,
     transcription_worker,
 )
+from .controller.playback import AudioPlayer, PlaybackError
+from .controller.speaker_edit import (
+    RegisteredReview,
+    SpeakerEditController,
+    SpeakerEditError,
+)
+from .speaker_review import ReviewError, load_review
+from .speakers import SpeakerSegment
 
 
 def _load_glib() -> Any:
@@ -34,9 +43,22 @@ GLib = _load_glib()
 
 AUDIO_FILTER = "Audio-Dateien (*.mp3;*.m4a;*.aac;*.wav;*.flac;*.ogg;*.opus;*.wma)"
 JSON_FILTER = "JSON-Dateien (*.json)"
+REVIEW_FILTER = "Review-Dateien (*.review.json)"
 GGML_FILTER = "GGML-Modelle (*.bin;*.gguf)"
 ALL_FILES_FILTER = "Alle Dateien (*.*)"
 MAX_QUEUED_LOGS = 300
+
+
+def _representative_segment(
+    review: RegisteredReview, speaker_id: str
+) -> SpeakerSegment:
+    """Wählt das erste gültige Segment einer registrierten Sprecher-ID."""
+    if speaker_id not in review.speaker_map:
+        raise SpeakerEditError("Unbekannte Sprecher-ID.")
+    for segment, segment_id in zip(review.segments, review.segment_ids, strict=True):
+        if segment_id == speaker_id and segment.start >= 0 and segment.start < segment.end:
+            return segment
+    raise PlaybackError("Für diesen Sprecher ist kein gültiges Audiosegment verfügbar.")
 
 
 class Bridge:
@@ -47,6 +69,8 @@ class Bridge:
     ) -> None:
         self.config = config or Config()
         self.controller = controller or JobController()
+        self.speaker_controller = SpeakerEditController()
+        self.batch_controller = BatchController(self.controller, self._enqueue_batch_event)
         self.window: webview.Window | None = None
         self._state_lock = threading.RLock()
         self._events: deque[tuple[str, dict[str, Any]]] = deque()
@@ -57,11 +81,15 @@ class Bridge:
         self._window_loaded = False
         self._closed = False
         self._active_job_id: str | None = None
+        self._active_batch_id: str | None = None
+        self._pending_batch: list[Any] = []
+        self._player: AudioPlayer | None = None
         self._paths: dict[str, Path | None] = {
             "audio": self.config.get_path("last_audio_path"),
             "marker": self.config.get_path("last_marker_path"),
             "output": self.config.get_path("last_output_dir"),
             "model": self.config.get_path("last_model_path"),
+            "watch": self.config.get_path("last_watch_dir"),
         }
 
     def __dir__(self) -> list[str]:
@@ -87,6 +115,10 @@ class Bridge:
             self._closed = True
             self._events.clear()
             self._latest_progress = None
+            player = self._player
+            self._player = None
+        if player is not None:
+            player.stop()
 
     def initial_state(self) -> dict[str, Any]:
         """Liefert den durch das JS-Readiness-Gate angeforderten Startzustand."""
@@ -124,6 +156,171 @@ class Bridge:
             lambda: self._dialog(webview.FOLDER_DIALOG, "Ausgabeordner auswählen", (), "output")
         )
         return self._record_path("output", result, must_be_directory=True)
+
+    def pick_review_file(self) -> dict[str, Any]:
+        """Lädt eine Review hinter einer opaken ID, ohne ihren Pfad an JS zu geben."""
+        chosen = self._run_on_gtk(
+            lambda: self._dialog(
+                webview.OPEN_DIALOG,
+                "Review-Datei auswählen",
+                (REVIEW_FILTER, ALL_FILES_FILTER),
+                "review",
+            )
+        )
+        if not chosen:
+            return {"ok": False, "cancelled": True}
+        path = Path(chosen).expanduser()
+        try:
+            review = load_review(path)
+        except ReviewError as exc:
+            return {"ok": False, "error": str(exc)}
+        registered = RegisteredReview(
+            review.audio_path,
+            review.segments,
+            review.speaker_map,
+            review.markers,
+            review.bookmarks,
+            path.parent,
+            review.base_name,
+            review.formats,
+        )
+        with self._state_lock:
+            review_id = self.speaker_controller.register(registered)
+        self.controller.update_config(
+            self.config,
+            lambda: self._save_config_path("last_review_dir", path.parent),
+        )
+        return {
+            "ok": True,
+            "review_id": review_id,
+            "audio_name": review.audio_path.name,
+            "speakers": [
+                {"id": speaker_id, "name": name}
+                for speaker_id, name in review.speaker_map.items()
+            ],
+        }
+
+    def play_segment(self, review_id: Any, speaker_id: Any) -> dict[str, Any]:
+        if not isinstance(review_id, str) or not isinstance(speaker_id, str):
+            return {"ok": False, "error": "Ungültige Review- oder Sprecher-ID."}
+        try:
+            with self._state_lock:
+                review = self.speaker_controller.get(review_id)
+                segment = _representative_segment(review, speaker_id)
+                previous = self._player
+                player = AudioPlayer(review.audio_path)
+                self._player = player
+            if previous is not None:
+                previous.stop()
+            player.play_segment(segment.start, segment.end)
+        except (SpeakerEditError, PlaybackError) as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True}
+
+    def stop_playback(self) -> dict[str, Any]:
+        with self._state_lock:
+            player = self._player
+            self._player = None
+        if player is not None:
+            player.stop()
+        return {"ok": True}
+
+    def apply_speaker_rename(self, review_id: Any, rename_map: Any) -> dict[str, Any]:
+        if not isinstance(review_id, str) or not isinstance(rename_map, dict):
+            return {"ok": False, "error": "Ungültige Umbenennung."}
+        try:
+            with self._state_lock:
+                result = self.speaker_controller.apply(review_id, rename_map)
+        except SpeakerEditError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {
+            "ok": True,
+            "files_rewritten": len(result.output_paths),
+            "speakers": [
+                {"id": speaker_id, "name": name}
+                for speaker_id, name in result.speaker_map.items()
+            ],
+        }
+
+    def pick_watch_dir(self) -> dict[str, Any]:
+        chosen = self._run_on_gtk(
+            lambda: self._dialog(webview.FOLDER_DIALOG, "Sync-Ordner auswählen", (), "watch")
+        )
+        result = self._record_path("watch", chosen, must_be_directory=True)
+        if result.get("ok"):
+            path = Path(result["path"])
+            self.controller.update_config(
+                self.config,
+                lambda: self._save_config_path("last_watch_dir", path),
+            )
+        return result
+
+    def scan_batch(self) -> dict[str, Any]:
+        with self._state_lock:
+            watch_dir = self._paths["watch"]
+            output_dir = self._paths["output"]
+            running = self._active_batch_id is not None
+        if running:
+            return {"ok": False, "error": "Der Batch läuft bereits."}
+        if watch_dir is None or output_dir is None:
+            return {"ok": False, "error": "Bitte Sync- und Ausgabeordner auswählen."}
+        if not watch_dir.is_dir() or not output_dir.is_dir():
+            return {"ok": False, "error": "Sync- oder Ausgabeordner ist nicht verfügbar."}
+        items, skipped = self.batch_controller.scan(watch_dir, output_dir)
+        with self._state_lock:
+            self._pending_batch = items
+        return {
+            "ok": True,
+            "items": [
+                {
+                    "audio_name": item.audio_path.name,
+                    "marker_name": item.marker_path.name if item.marker_path else None,
+                }
+                for item in items
+            ],
+            "skipped_unstable": skipped,
+        }
+
+    def start_batch(self, raw_settings: Any) -> dict[str, Any]:
+        if not isinstance(raw_settings, dict):
+            return {"ok": False, "error": "Ungültige Einstellungen."}
+        with self._state_lock:
+            if self._active_batch_id is not None:
+                return {"ok": False, "error": "busy", "busy": True}
+            items = list(self._pending_batch)
+            paths = dict(self._paths)
+        if not items:
+            return {"ok": False, "error": "Bitte zuerst nach Dateien scannen."}
+        built = []
+        errors: list[str] = []
+        for item in items:
+            item_paths = dict(paths)
+            item_paths["audio"] = item.audio_path
+            item_paths["marker"] = item.marker_path
+            settings = self._settings_from_request(raw_settings, item_paths)
+            if isinstance(settings, str):
+                errors.append(settings)
+                break
+            result = build_params(settings)
+            if not result.ok or result.params is None:
+                errors.extend(result.errors)
+                break
+            built.append((item, result.params))
+        if errors:
+            return {"ok": False, "errors": errors}
+        batch_id = self.batch_controller.start(built)
+        if batch_id is None:
+            return {"ok": False, "error": "busy", "busy": True}
+        with self._state_lock:
+            self._active_batch_id = batch_id
+        self._save_settings(built[0][1])
+        return {"ok": True, "batch_id": batch_id}
+
+    def cancel_batch(self, batch_id: Any) -> dict[str, Any]:
+        if not isinstance(batch_id, str):
+            return {"ok": False, "error": "Ungültige Batch-ID."}
+        cancelled = self.batch_controller.cancel(batch_id)
+        return {"ok": cancelled, "error": None if cancelled else "Unbekannte Batch-ID."}
 
     def start_transcription(self, raw_settings: Any) -> dict[str, Any]:
         """Validiert UI-Werte und startet genau einen Controller-Worker."""
@@ -179,6 +376,26 @@ class Bridge:
                 self._events.append((job_id, payload))
         self._schedule_drain()
 
+    def _enqueue_batch_event(self, event: tuple[Any, ...]) -> None:
+        payload = self._batch_event_payload(event)
+        if payload is None:
+            return
+        batch_id = str(event[1])
+        with self._state_lock:
+            if self._closed:
+                return
+            if self._active_batch_id not in {None, batch_id}:
+                return
+            if payload["type"] == "batch_item_progress":
+                self._latest_progress = (batch_id, payload)
+            else:
+                if payload["type"] == "batch_item_log":
+                    while self._queued_logs >= MAX_QUEUED_LOGS:
+                        self._discard_oldest_log()
+                    self._queued_logs += 1
+                self._events.append((batch_id, payload))
+        self._schedule_drain()
+
     def enqueue_api_result(self, call_id: str, result: Any, error: str | None = None) -> None:
         """Reiht eine Antwort der statischen CSP-kompatiblen JS-API über den GTK-Dispatcher ein."""
         payload = {"type": "bridge-result", "id": call_id, "ok": error is None}
@@ -231,7 +448,8 @@ class Bridge:
         """Sendet die vom GTK-Idle-Drain gebündelten Daten über pywebviews ``run_js``."""
         for job_id, payload in events:
             with self._state_lock:
-                if self._closed or (job_id and job_id != self._active_job_id):
+                valid_id = job_id in {"", self._active_job_id, self._active_batch_id}
+                if self._closed or not valid_id:
                     continue
             try:
                 payload_json = json.dumps(payload, ensure_ascii=False)
@@ -244,6 +462,11 @@ class Bridge:
                     if self._active_job_id == job_id:
                         self._active_job_id = None
                         self.controller.release()
+            elif payload["type"] == "batch_finished":
+                with self._state_lock:
+                    if self._active_batch_id == job_id:
+                        self._active_batch_id = None
+                        self._pending_batch = []
         with self._state_lock:
             self._delivery_active = False
         self._schedule_drain()
@@ -304,6 +527,9 @@ class Bridge:
         with self._state_lock:
             self._paths[key] = path
         return {"ok": True, "path": str(path)}
+
+    def _save_config_path(self, key: str, path: Path) -> None:
+        self.config.set_path(key, path)
 
     def _settings_from_request(
         self, raw: dict[str, Any], paths: dict[str, Path | None]
@@ -424,6 +650,30 @@ class Bridge:
             }
         return None
 
+    @staticmethod
+    def _batch_event_payload(event: tuple[Any, ...]) -> dict[str, Any] | None:
+        if len(event) < 2 or not isinstance(event[1], str):
+            return None
+        event_type = event[0]
+        payload: dict[str, Any] = {"type": event_type, "batch_id": event[1]}
+        if event_type == "batch_item_start":
+            payload.update(index=event[2], total=event[3], audio_name=event[4])
+        elif event_type in {"batch_item_done", "batch_item_error", "batch_item_skip"}:
+            payload.update(audio_name=event[2], message=event[3])
+        elif event_type == "batch_item_log":
+            payload.update(
+                index=event[2], total=event[3], level=event[4], message=event[5]
+            )
+        elif event_type == "batch_item_progress":
+            payload.update(
+                index=event[2], total=event[3], percent=event[4], phase=event[5]
+            )
+        elif event_type == "batch_finished":
+            payload.update(succeeded=event[2], failed=event[3], skipped=event[4])
+        else:
+            return None
+        return payload
+
 
 def _install_strict_csp_bridge() -> None:
     """Ersetzt pywebviews eval-Antwortpfad durch den festen ``run_js``-Dispatcher.
@@ -470,7 +720,7 @@ def main() -> None:
         bridge.attach_window(window)
         window.events.loaded += bridge.on_window_loaded
         window.events.closed += bridge.on_window_closed
-        webview.start(_install_strict_csp_bridge)
+        webview.start(_install_strict_csp_bridge, gui="gtk")
 
 
 if __name__ == "__main__":

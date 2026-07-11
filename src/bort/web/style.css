@@ -278,6 +278,7 @@ legend { color: var(--muted); font-size: 13px; padding: 0 0 4px; }
 .primary:hover { color: #071624; }
 .primary:active { box-shadow: var(--pressed) !important; transform: translateY(1px); }
 .primary:disabled { opacity: 0.55; cursor: wait; }
+button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .logs-card pre {
   min-height: 110px;
@@ -314,6 +315,44 @@ legend { color: var(--muted); font-size: 13px; padding: 0 0 4px; }
   align-self: start;
 }
 
+/* --- Sprecher- und Batch-Ansichten --- */
+.card-heading, .actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+.card-heading h2 { margin-bottom: 0; }
+.actions { justify-content: flex-end; margin-top: 22px; }
+.speaker-rows, .batch-items { display: grid; gap: 14px; margin-top: 20px; }
+.speaker-edit-row {
+  display: grid;
+  grid-template-columns: minmax(90px, 0.35fr) minmax(180px, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  padding: 14px 16px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-sink);
+  box-shadow: var(--pressed-sm);
+}
+.speaker-id { color: var(--accent); font-weight: 600; overflow-wrap: anywhere; }
+.batch-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 14px 16px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-sink);
+  box-shadow: var(--pressed-sm);
+}
+.batch-item div { display: grid; gap: 3px; min-width: 0; }
+.batch-item strong { overflow-wrap: anywhere; }
+.batch-item div span, .batch-outcome, .empty-state { color: var(--muted); font-size: 13px; }
+.batch-outcome { text-align: right; }
+.batch-outcome.error { color: var(--danger); }
+.empty-state { margin: 4px 0; }
+
 .placeholder { margin-top: 110px; text-align: center; }
 .placeholder h1 { margin-bottom: 10px; }
 
@@ -321,4 +360,6 @@ legend { color: var(--muted); font-size: 13px; padding: 0 0 4px; }
   .sidebar { width: 180px; }
   .form-grid { grid-template-columns: 1fr; }
   .options-card { grid-column: auto; }
+  .speaker-edit-row { grid-template-columns: 90px 1fr; }
+  .speaker-edit-row button { grid-column: 2; justify-self: end; }
 }

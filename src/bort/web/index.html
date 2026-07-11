@@ -46,8 +46,38 @@
         <div class="card logs-card"><h2>Protokoll</h2><pre id="log" aria-live="polite"></pre></div>
         <div id="preview" class="card preview" hidden><h2>Vorschau</h2><p id="output-location"></p><div id="segments"></div></div>
       </section>
-      <section id="speakers" class="view placeholder"><h1>Sprecher</h1><p>Kommt in Phase 2.</p></section>
-      <section id="batch" class="view placeholder"><h1>Batch</h1><p>Kommt in Phase 2.</p></section>
+      <section id="speakers" class="view" aria-labelledby="speakers-title">
+        <header><h1 id="speakers-title">Sprecher</h1><p>Namen in einem fertigen Review prüfen und ändern.</p></header>
+        <p id="speaker-status" class="status" role="status">Review-Datei auswählen.</p>
+        <div class="card">
+          <h2>Review</h2>
+          <div class="picker"><input id="review-name" readonly placeholder="Keine Review-Datei geladen"><button id="pick-review" type="button">Review-Datei auswählen</button></div>
+        </div>
+        <div id="speaker-editor" class="card" hidden>
+          <div class="card-heading"><h2>Sprechernamen</h2><button id="stop-playback" type="button">■ Stop</button></div>
+          <div id="speaker-rows" class="speaker-rows"></div>
+          <div class="actions"><button id="apply-speakers" class="primary" type="button">Anwenden</button></div>
+        </div>
+      </section>
+      <section id="batch" class="view" aria-labelledby="batch-title">
+        <header><h1 id="batch-title">Batch</h1><p>Neue Aufnahmen aus einem Sync-Ordner nacheinander verarbeiten.</p></header>
+        <p id="batch-status" class="status" role="status">Sync-Ordner auswählen und scannen.</p>
+        <div class="card">
+          <h2>Quelle</h2>
+          <label>Sync-Ordner<span class="picker"><input id="watch-path" readonly><button id="pick-watch" type="button">Sync-Ordner wählen</button><button id="scan-batch" type="button">Scannen</button></span></label>
+          <p id="unstable-count" class="muted"></p>
+        </div>
+        <div class="card">
+          <div class="card-heading"><h2>Ausstehende Dateien</h2><span id="pending-count" class="muted">0 Dateien</span></div>
+          <div id="batch-items" class="batch-items"><p class="empty-state">Noch nicht gescannt.</p></div>
+        </div>
+        <div class="card run-card">
+          <div class="progress-track" aria-label="Batch-Fortschritt"><div id="batch-progress-bar"></div></div>
+          <div class="progress-line"><span id="batch-progress-label">Bereit</span><span id="batch-progress-value">0 %</span></div>
+          <div class="actions"><button id="cancel-batch" type="button" disabled>Abbrechen</button><button id="start-batch" class="primary" type="button" disabled>Alle verarbeiten</button></div>
+        </div>
+        <div class="card logs-card"><h2>Batch-Protokoll</h2><pre id="batch-log" aria-live="polite"></pre></div>
+      </section>
     </main>
   </div>
   <script src="app.js"></script>
