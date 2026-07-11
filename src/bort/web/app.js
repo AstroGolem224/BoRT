@@ -4,6 +4,14 @@
   let callNumber = 0;
   let api = null;
 
+  // Theme (hell/dunkel) – rein clientseitig via localStorage, Default dunkel.
+  const applyTheme = (theme) => {
+    document.documentElement.setAttribute('data-theme', theme === 'light' ? 'light' : 'dark');
+  };
+  let currentTheme = 'dark';
+  try { currentTheme = localStorage.getItem('bort-theme') || 'dark'; } catch (_) { currentTheme = 'dark'; }
+  applyTheme(currentTheme);
+
   const setStatus = (message, error = false) => {
     const node = $('status');
     node.textContent = message;
@@ -113,6 +121,11 @@
       renderPreview(payload.segments || [], payload.output_location);
     }
   };
+  $('theme-toggle').addEventListener('click', () => {
+    currentTheme = currentTheme === 'light' ? 'dark' : 'light';
+    applyTheme(currentTheme);
+    try { localStorage.setItem('bort-theme', currentTheme); } catch (_) { /* egal */ }
+  });
   document.querySelectorAll('.nav-item').forEach((button) => button.addEventListener('click', () => {
     document.querySelectorAll('.nav-item').forEach((item) => item.classList.toggle('active', item === button));
     document.querySelectorAll('.view').forEach((view) => view.classList.toggle('active', view.id === button.dataset.view));

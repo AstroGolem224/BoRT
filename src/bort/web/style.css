@@ -23,6 +23,22 @@
   --pressed-sm: inset 3px 3px 7px var(--shadow-dark-soft), inset -3px -3px 7px var(--shadow-light-soft);
 }
 
+/* Helle Version – klassisches Light-Neumorphism (weich-graues Weiß). */
+[data-theme="light"] {
+  --bg: #e8ecf2;
+  --bg-sink: #e2e7ee;
+  --shadow-dark: #c3cad6;
+  --shadow-light: #ffffff;
+  --shadow-dark-soft: #cbd2dd;
+  --shadow-light-soft: #ffffff;
+  --text: #2b2e35;
+  --muted: #71767f;
+  --accent: #3f80c2;
+  --accent-soft: #2f6aa8;
+  --accent-glow: rgba(63, 128, 194, 0.28);
+  --danger: #cc5b5b;
+}
+
 * { box-sizing: border-box; }
 
 body {
@@ -173,6 +189,33 @@ select {
 }
 select:disabled { color: var(--muted); cursor: default; opacity: 0.7; }
 select option { background: #26282c; color: var(--text); }
+[data-theme="light"] select {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='none' stroke='%2371767f' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round' d='M1 1.5 6 6.5 11 1.5'/%3E%3C/svg%3E");
+}
+[data-theme="light"] select option { background: #eef1f6; }
+
+/* Theme-Umschalter (oben rechts) */
+.theme-toggle {
+  position: fixed;
+  top: 18px;
+  right: 20px;
+  z-index: 20;
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  background: var(--bg);
+  color: var(--muted);
+  box-shadow: var(--raised-sm);
+  font-size: 18px;
+  line-height: 1;
+  display: grid;
+  place-items: center;
+  transition: box-shadow 0.13s ease, color 0.18s ease, transform 0.13s ease;
+}
+.theme-toggle:hover { color: var(--accent); }
+.theme-toggle:active { box-shadow: var(--pressed-sm); transform: translateY(1px); }
+.theme-toggle::before { content: "\2600"; }               /* ☀ im Dunkelmodus -> zu Hell wechseln */
+[data-theme="light"] .theme-toggle::before { content: "\263D"; }  /* ☽ im Hellmodus -> zu Dunkel wechseln */
 
 button:not(.nav-item) {
   padding: 11px 15px;
