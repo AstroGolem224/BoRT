@@ -10,10 +10,11 @@ from typing import TYPE_CHECKING
 
 import customtkinter as ctk
 
-from .batch import PendingItem, is_file_stable, scan_pending
+from .batch import PendingItem, is_file_stable
+from .controller.batch import BatchController
+from .controller.jobs import transcription_worker
 from .dialogs import show_error, show_info
 from .filedialogs import ask_directory
-from .gui import transcription_worker
 from .markers import MarkerError, load_markers
 from .theme import COLORS
 
@@ -38,6 +39,8 @@ class BatchWindow(ctk.CTkToplevel):
         self.scan_thread: threading.Thread | None = None
         self._stop_requested = False
         self._batch_running = False
+        self.batch_controller = BatchController(parent_app.jobs, self.log_queue.put)
+        self.batch_id: str | None = None
         self.watch_dir_var = ctk.StringVar(
             value=str(parent_app.config.get_path("last_watch_dir") or "")
         )
@@ -174,9 +177,8 @@ class BatchWindow(ctk.CTkToplevel):
         self.scan_thread.start()
 
     def _run_scan(self, watch_dir: Path, output_dir: Path) -> None:
-        candidates = scan_pending(watch_dir, output_dir)
-        stable = [item for item in candidates if is_file_stable(item.audio_path)]
-        self.log_queue.put(("scan_done", stable, len(candidates) - len(stable)))
+        stable, skipped = self.batch_controller.scan(watch_dir, output_dir)
+        self.log_queue.put(("scan_done", stable, skipped))
 
     def _on_scan_done(self, stable: list[PendingItem], skipped: int) -> None:
         self.pending = stable
@@ -201,22 +203,23 @@ class BatchWindow(ctk.CTkToplevel):
     def _on_process_all(self) -> None:
         if not self.pending or self._batch_running:
             return
-        if not self.parent_app.try_acquire_job():
-            show_error(
-                self, "Fehler", "Es läuft bereits eine Transkription (Einzel-Lauf oder Batch)."
-            )
-            return
         built = [
             (item, self.parent_app._build_params(item.audio_path, item.marker_path))
             for item in self.pending
         ]
+        batch_id = self.batch_controller.start(built)
+        if batch_id is None:
+            show_error(
+                self, "Fehler", "Es läuft bereits eine Transkription (Einzel-Lauf oder Batch)."
+            )
+            return
+        self.batch_id = batch_id
         self._batch_running = True
         self._stop_requested = False
         self.process_button.configure(state="disabled")
         self.scan_button.configure(state="disabled")
         self.cancel_button.configure(state="normal")
-        self.worker_thread = threading.Thread(target=self._run_batch, args=(built,), daemon=True)
-        self.worker_thread.start()
+        self.worker_thread = None
 
     def _run_batch(self, built: list[tuple[PendingItem, object]]) -> None:
         succeeded = failed = skipped = 0
@@ -310,6 +313,8 @@ class BatchWindow(ctk.CTkToplevel):
         return ok, message
 
     def _on_cancel(self) -> None:
+        if self.batch_id is not None:
+            self.batch_controller.cancel(self.batch_id)
         self._stop_requested = True
         self.cancel_button.configure(state="disabled")
         self._append_log("Abbruch angefordert — stoppt nach aktuellem Item …")
@@ -322,21 +327,28 @@ class BatchWindow(ctk.CTkToplevel):
                 if kind == "scan_done":
                     self._on_scan_done(item[1], item[2])
                 elif kind == "batch_item_start":
-                    self._append_log(f"[{item[1]}/{item[2]}] Verarbeite {item[3]} …")
+                    if item[1] == self.batch_id:
+                        self._append_log(f"[{item[2]}/{item[3]}] Verarbeite {item[4]} …")
                 elif kind == "batch_item_log":
-                    self._append_log(f"    {item[3]}: {item[4]}")
+                    if item[1] == self.batch_id:
+                        self._append_log(f"    {item[4]}: {item[5]}")
                 elif kind == "batch_item_progress":
-                    self.status_label.configure(
-                        text=f"[{item[1]}/{item[2]}] {int(item[3])}% · {item[4]}"
-                    )
+                    if item[1] == self.batch_id:
+                        self.status_label.configure(
+                            text=f"[{item[2]}/{item[3]}] {int(item[4])}% · {item[5]}"
+                        )
                 elif kind == "batch_item_done":
-                    self._append_log(f"  → {item[1]}: {item[2]}")
+                    if item[1] == self.batch_id:
+                        self._append_log(f"  → {item[2]}: {item[3]}")
                 elif kind == "batch_item_error":
-                    self._append_log(f"  → {item[1]}: Fehler ({item[2]})")
+                    if item[1] == self.batch_id:
+                        self._append_log(f"  → {item[2]}: Fehler ({item[3]})")
                 elif kind == "batch_item_skip":
-                    self._append_log(f"  → {item[1]}: übersprungen ({item[2]})")
+                    if item[1] == self.batch_id:
+                        self._append_log(f"  → {item[2]}: übersprungen ({item[3]})")
                 elif kind == "batch_finished":
-                    self._finish_batch(item[1], item[2], item[3])
+                    if item[1] == self.batch_id:
+                        self._finish_batch(item[2], item[3], item[4])
         except queue.Empty:
             pass
         finally:
@@ -358,7 +370,7 @@ class BatchWindow(ctk.CTkToplevel):
         self.process_button.configure(state="disabled")
         self.scan_button.configure(state="normal")
         self.cancel_button.configure(state="disabled")
-        self.parent_app.release_job()
+        self.batch_id = None
         show_info(
             self,
             "Fertig",

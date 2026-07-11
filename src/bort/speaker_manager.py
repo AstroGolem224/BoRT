@@ -8,69 +8,20 @@ Nach dem Umbenennen wird das Transkript neu geschrieben.
 from __future__ import annotations
 
 import logging
-import subprocess
 import threading
 import time
 from pathlib import Path
 
 import customtkinter as ctk
 
+from .controller.playback import AudioPlayer, PlaybackError
+from .controller.speaker_edit import RegisteredReview, SpeakerEditController
 from .dialogs import show_error, show_info
 from .markers import Bookmark
 from .speakers import Segment, SpeakerMarker, SpeakerSegment
 from .theme import COLORS
-from .writers import write_outputs
 
 logger = logging.getLogger(__name__)
-
-
-class AudioPlayer:
-    """Spielt Audio-Intervalle via ffplay als Subprocess ab."""
-
-    def __init__(self, audio_path: Path) -> None:
-        self.audio_path = audio_path
-        self._process: subprocess.Popen | None = None
-        self._lock = threading.Lock()
-
-    def play_segment(self, start: float, end: float) -> None:
-        """Spielt das Intervall [start, end] in Sekunden ab."""
-        self.stop()
-        duration = max(0.1, end - start)
-        with self._lock:
-            self._process = subprocess.Popen(
-                [
-                    "ffplay",
-                    "-nodisp",
-                    "-nostats",
-                    "-loglevel",
-                    "quiet",
-                    "-ss",
-                    f"{start:.3f}",
-                    "-t",
-                    f"{duration:.3f}",
-                    "-autoexit",
-                    str(self.audio_path),
-                ],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-
-    def stop(self) -> None:
-        """Stoppt die Wiedergabe."""
-        with self._lock:
-            if self._process is not None:
-                try:
-                    self._process.terminate()
-                    self._process.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    self._process.kill()
-                except Exception:
-                    pass
-                self._process = None
-
-    def is_playing(self) -> bool:
-        with self._lock:
-            return self._process is not None and self._process.poll() is None
 
 
 class SpeakerManagerWindow(ctk.CTkToplevel):
@@ -106,6 +57,19 @@ class SpeakerManagerWindow(ctk.CTkToplevel):
         self.formats = formats
 
         self.player = AudioPlayer(audio_path)
+        self.editor = SpeakerEditController()
+        self.review_id = self.editor.register(
+            RegisteredReview(
+                audio_path,
+                segments,
+                dict(speaker_map),
+                list(markers),
+                list(bookmarks or []),
+                output_dir,
+                base_name,
+                list(formats),
+            )
+        )
         self.name_vars: dict[str, ctk.StringVar] = {}
         self.play_buttons: dict[str, ctk.CTkButton] = {}
         self._current_playing: set[str] = set()
@@ -277,7 +241,11 @@ class SpeakerManagerWindow(ctk.CTkToplevel):
         for btn in self.play_buttons.values():
             btn.configure(text="▶ Abspielen")
         self._current_playing = {spk_id}
-        self.player.play_segment(start, end)
+        try:
+            self.player.play_segment(start, end)
+        except PlaybackError as exc:
+            show_error(self, "Wiedergabe nicht möglich", str(exc))
+            return
         self.play_buttons[spk_id].configure(text="⏹ Stop")
         threading.Thread(target=self._watch_playback, args=(spk_id,), daemon=True).start()
 
@@ -302,68 +270,18 @@ class SpeakerManagerWindow(ctk.CTkToplevel):
                 new_name = self.speaker_map.get(spk_id, spk_id)
             new_map[spk_id] = new_name
 
-        old_to_new: dict[str, str] = {
-            self.speaker_map[spk_id]: new_map[spk_id] for spk_id in self.speaker_map
-        }
-        updated_segments: list[SpeakerSegment] = []
-        for seg in self.segments:
-            updated_segments.append(
-                SpeakerSegment(
-                    start=seg.start,
-                    end=seg.end,
-                    speaker=old_to_new.get(seg.speaker, seg.speaker),
-                    text=seg.text,
-                )
-            )
-        updated_markers = [
-            SpeakerMarker(
-                start=m.start,
-                end=m.end,
-                speaker=old_to_new.get(m.speaker, m.speaker),
-            )
-            for m in self.markers
-        ]
-        self.speaker_map = new_map
-        self.markers = updated_markers
-
-        review_data = {
-            "schema_version": 1,
-            "audio_path": str(self.audio_path),
-            "segments": [
-                {"start": s.start, "end": s.end, "speaker": s.speaker, "text": s.text}
-                for s in updated_segments
-            ],
-            "speaker_map": dict(new_map),
-            "markers": [
-                {"start": m.start, "end": m.end, "speaker": m.speaker} for m in updated_markers
-            ],
-            "bookmarks": [
-                {"time": b.time, "label": b.label, "type": b.type, "color": b.color}
-                for b in self.bookmarks
-            ],
-            "base_name": self.base_name,
-            "formats": self.formats,
-        }
-
         try:
-            output_paths = write_outputs(
-                segments=updated_segments,
-                output_dir=self.output_dir,
-                base_name=self.base_name,
-                formats=self.formats,
-                bookmarks=self.bookmarks or None,
-                review_data=review_data,
-                overwrite=True,
-            )
-            location = output_paths[0].parent if output_paths else self.output_dir
+            result = self.editor.apply(self.review_id, new_map)
+            self.speaker_map = result.speaker_map
+            self.markers = result.markers
             show_info(
                 self,
                 "Fertig",
                 f"Transkript aktualisiert.\n"
-                f"{len(updated_segments)} Segmente neu geschrieben in:\n"
-                f"{location}",
+                f"{len(result.segments)} Segmente neu geschrieben in:\n"
+                f"{result.location}",
             )
-            self.segments = updated_segments
+            self.segments = result.segments
         except Exception as exc:
             logger.exception("Fehler beim Neuschreiben des Transkripts")
             show_error(

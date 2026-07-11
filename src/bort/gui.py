@@ -13,26 +13,27 @@ import customtkinter as ctk
 
 from .audio import SUPPORTED_AUDIO_EXTS, AudioError, convert_to_wav, is_supported_audio
 from .config import Config
+from .controller.jobs import (
+    JobController,
+    TranscriptionSettings,
+    build_params,
+)
+from .controller.jobs import (
+    TranscriptionParams as ControllerTranscriptionParams,
+)
+from .controller.jobs import (
+    transcription_worker as controller_transcription_worker,
+)
 from .dialogs import show_error, show_info
 from .filedialogs import ask_directory, ask_open_file
 from .markers import Bookmark, MarkerError, find_companion_marker, load_bookmarks, load_markers
 from .speaker_manager import SpeakerManagerWindow
-from .speakers import (
-    MarkerSpeakerResolver,
-    PlaceholderSpeakerResolver,
-    SpeakerMarker,
-)
+from .speakers import MarkerSpeakerResolver, PlaceholderSpeakerResolver, SpeakerMarker
 from .theme import COLORS
 from .transcription import TranscriptionError, transcribe
-from .whisperx_backend import (
-    WhisperXError,
-)
-from .whisperx_backend import (
-    save_markers as save_whisperx_markers,
-)
-from .whisperx_backend import (
-    transcribe as transcribe_whisperx,
-)
+from .whisperx_backend import WhisperXError
+from .whisperx_backend import save_markers as save_whisperx_markers
+from .whisperx_backend import transcribe as transcribe_whisperx
 from .writers import write_outputs
 
 DEFAULT_FORMATS = ["txt", "md", "csv", "tsv"]
@@ -288,7 +289,7 @@ class TranscriptionApp:
         self._on_backend_change(self.backend_display_var.get())
         self.log_queue: queue.Queue = queue.Queue()
         self.worker_thread: threading.Thread | None = None
-        self.job_running = False
+        self.jobs = JobController()
         self._audio_trace_id: str | None = None
         # Auto-Load der Begleit-JSON auch beim manuellen Tippen/Einfügen des Pfads.
         self.audio_var.trace_add("write", self._on_audio_var_change)
@@ -773,29 +774,28 @@ class TranscriptionApp:
             for fmt, var in self.format_vars.items():
                 var.set(fmt in active)
 
-    def _save_config_values(self, params: TranscriptionParams) -> None:
+    def _save_config_values(self, params: ControllerTranscriptionParams) -> None:
         """Speichert die aktuell verwendeten Pfade und Einstellungen."""
-        self.config.set_path("last_audio_path", params.audio_path)
-        self.config.set_path("last_audio_dir", params.audio_path.parent)
-        if params.marker_path:
-            self.config.set_path("last_marker_path", params.marker_path)
-            self.config.set_path("last_marker_dir", params.marker_path.parent)
-        if params.model_path:
-            self.config.set_path("last_model_path", params.model_path)
-            self.config.set_path("last_model_dir", params.model_path.parent)
-        self.config.set_path("last_output_dir", params.output_dir)
-        self.config.set("last_language", params.language or "auto")
-        self.config.set("last_task_display", self.task_display_var.get())
-        self.config.set("last_backend", params.backend)
-        if params.backend == "whisperx":
-            self.config.set("last_whisperx_model", params.whisperx_model)
-        # Ausgabeformate merken
-        self.config.set(
-            "last_formats",
-            ",".join(fmt for fmt, v in self.format_vars.items() if v.get()),
-        )
-        self.config.set("appearance_mode", ctk.get_appearance_mode().lower())
-        self.config.save()
+
+        def update() -> None:
+            self.config.set_path("last_audio_path", params.audio_path)
+            self.config.set_path("last_audio_dir", params.audio_path.parent)
+            if params.marker_path:
+                self.config.set_path("last_marker_path", params.marker_path)
+                self.config.set_path("last_marker_dir", params.marker_path.parent)
+            if params.model_path:
+                self.config.set_path("last_model_path", params.model_path)
+                self.config.set_path("last_model_dir", params.model_path.parent)
+            self.config.set_path("last_output_dir", params.output_dir)
+            self.config.set("last_language", params.language or "auto")
+            self.config.set("last_task_display", self.task_display_var.get())
+            self.config.set("last_backend", params.backend)
+            if params.backend == "whisperx":
+                self.config.set("last_whisperx_model", params.whisperx_model)
+            self.config.set("last_formats", ",".join(params.formats))
+            self.config.set("appearance_mode", ctk.get_appearance_mode().lower())
+
+        self.jobs.update_config(self.config, update)
 
     def _change_appearance(self, value: str) -> None:
         """Wechselt zwischen Light, Dark und System-Theme."""
@@ -964,7 +964,7 @@ class TranscriptionApp:
             lines.append(f"  • Marker: {Path(marker_path).name}")
         self._log("INFO", "\n".join(lines))
 
-    def _validate(self) -> TranscriptionParams | None:
+    def _validate(self) -> ControllerTranscriptionParams | None:
         """Validiert die Eingaben und gibt Parameter zurück oder None."""
         audio_path = Path(self.audio_var.get())
         if not audio_path.exists():
@@ -989,66 +989,36 @@ class TranscriptionApp:
 
     def _build_params(
         self, audio_path: Path, marker_path: Path | None
-    ) -> TranscriptionParams | None:
+    ) -> ControllerTranscriptionParams | None:
         """Baut Parameter aus den aktuellen Engine- und Ausgabe-Einstellungen."""
-        backend = BACKENDS[self.backend_display_var.get()]
-        model_path: Path | None = None
-        whisperx_model = "large-v3"
-        if backend == "whispercpp":
-            model_path = Path(self.model_var.get())
-            if not model_path.exists():
-                show_error(self.root, "Fehler", "Modell-Datei nicht gefunden.")
-                return None
-        else:  # whisperx
-            whisperx_model = self.model_combo_var.get() or "large-v3"
-
         output_dir = Path(self.output_var.get())
         output_dir.mkdir(parents=True, exist_ok=True)
-
         formats = [fmt for fmt, var in self.format_vars.items() if var.get()]
-        if not formats:
-            show_error(self.root, "Fehler", "Mindestens ein Ausgabeformat auswählen.")
-            return None
-
-        language = self.language_var.get()
-
-        # Sprecher-Optionen (whisperX)
-        min_speakers = None
-        max_speakers = None
-        if backend == "whisperx":
-            if self.min_speakers_var.get().strip():
-                try:
-                    min_speakers = int(self.min_speakers_var.get())
-                except ValueError:
-                    show_error(self.root, "Fehler", "Min. Sprecher muss eine Zahl sein.")
-                    return None
-            if self.max_speakers_var.get().strip():
-                try:
-                    max_speakers = int(self.max_speakers_var.get())
-                except ValueError:
-                    show_error(self.root, "Fehler", "Max. Sprecher muss eine Zahl sein.")
-                    return None
-
-        return TranscriptionParams(
-            audio_path=audio_path,
-            marker_path=marker_path,
-            model_path=model_path,
-            language=language,
-            output_dir=output_dir,
-            formats=formats,
-            keep_wav=self.keep_wav_var.get(),
-            verbose=self.verbose_var.get(),
-            task=TASK_OPTIONS[self.task_display_var.get()],
-            backend=backend,
-            whisperx_model=whisperx_model,
-            min_speakers=min_speakers,
-            max_speakers=max_speakers,
-            no_diarize=self.no_diarize_var.get(),
-            auto_markers=self.auto_markers_var.get(),
+        result = build_params(
+            TranscriptionSettings(
+                audio_path=audio_path,
+                marker_path=marker_path,
+                model_path=Path(self.model_var.get()) if self.model_var.get() else None,
+                output_dir=output_dir,
+                formats=formats,
+                language=self.language_var.get(),
+                task=TASK_OPTIONS[self.task_display_var.get()],
+                backend=BACKENDS[self.backend_display_var.get()],
+                whisperx_model=self.model_combo_var.get(),
+                min_speakers=self.min_speakers_var.get(),
+                max_speakers=self.max_speakers_var.get(),
+                keep_wav=self.keep_wav_var.get(),
+                verbose=self.verbose_var.get(),
+                no_diarize=self.no_diarize_var.get(),
+                auto_markers=self.auto_markers_var.get(),
+            )
         )
+        if not result.ok:
+            show_error(self.root, "Fehler", "\n".join(result.errors))
+        return result.params
 
     def _on_run(self) -> None:
-        if not self.try_acquire_job():
+        if not self.jobs.acquire().acquired:
             show_error(
                 self.root, "Fehler", "Es läuft bereits eine Transkription (Einzel-Lauf oder Batch)."
             )
@@ -1071,8 +1041,8 @@ class TranscriptionApp:
         self.progress_label.grid()
 
         self.worker_thread = threading.Thread(
-            target=transcription_worker,
-            args=(params, self.log_queue),
+            target=controller_transcription_worker,
+            args=(params, self.log_queue.put),
             daemon=True,
         )
         self.worker_thread.start()
@@ -1114,7 +1084,7 @@ class TranscriptionApp:
                         done_data
                         and done_data.get("backend") == "whisperx"
                         and done_data.get("speaker_map")
-                        and not getattr(self, "_no_diarize", False)
+                        and not done_data.get("no_diarize", False)
                     ):
                         self._open_speaker_manager(done_data)
                     else:
@@ -1139,14 +1109,11 @@ class TranscriptionApp:
 
     def try_acquire_job(self) -> bool:
         """Versucht das appweite Job-Lock zu belegen."""
-        if self.job_running:
-            return False
-        self.job_running = True
-        return True
+        return self.jobs.acquire().acquired
 
     def release_job(self) -> None:
         """Gibt das appweite Job-Lock frei (idempotent)."""
-        self.job_running = False
+        self.jobs.release()
 
     def _open_speaker_manager(self, data: dict) -> None:
         """Öffnet den Speaker-Manager nach erfolgreichem whisperX-Lauf."""
@@ -1215,7 +1182,7 @@ class TranscriptionApp:
 
     def _open_batch_window(self) -> None:
         """Öffnet das Batch-Scan-Fenster."""
-        if self.job_running:
+        if self.jobs.running:
             show_error(
                 self.root, "Fehler", "Es läuft bereits eine Transkription (Einzel-Lauf oder Batch)."
             )
