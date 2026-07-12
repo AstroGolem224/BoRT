@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import threading
 import uuid
 from collections import deque
@@ -184,10 +185,22 @@ class Bridge:
         )
         with self._state_lock:
             review_id = self.speaker_controller.register(registered)
+            stored = self.speaker_controller.get(review_id)
         self.controller.update_config(
             self.config,
             lambda: self._save_config_path("last_review_dir", path.parent),
         )
+        segments = [
+            {
+                "start": segment.start,
+                "end": segment.end,
+                "speaker_id": speaker_id,
+                "text": segment.text,
+            }
+            for segment, speaker_id in zip(
+                stored.segments, stored.segment_ids, strict=True
+            )
+        ]
         return {
             "ok": True,
             "review_id": review_id,
@@ -196,7 +209,20 @@ class Bridge:
                 {"id": speaker_id, "name": name}
                 for speaker_id, name in review.speaker_map.items()
             ],
+            "segments": segments,
         }
+
+    def open_output_dir(self) -> dict[str, Any]:
+        """Öffnet den aktuellen Ausgabeordner im System-Dateimanager."""
+        with self._state_lock:
+            output = self._paths["output"]
+        if output is None or not output.is_dir():
+            return {"ok": False, "error": "Kein gültiger Ausgabeordner ausgewählt."}
+        try:
+            subprocess.Popen(["xdg-open", str(output)])
+        except OSError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True}
 
     def play_segment(self, review_id: Any, speaker_id: Any) -> dict[str, Any]:
         if not isinstance(review_id, str) or not isinstance(speaker_id, str):

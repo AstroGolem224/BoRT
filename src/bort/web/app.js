@@ -4,6 +4,7 @@
   let callNumber = 0;
   let api = null;
   let reviewId = null;
+  let reviewSegments = [];
   let activeBatchId = null;
   let pendingBatchItems = [];
 
@@ -131,6 +132,7 @@
       input.type = 'text';
       input.value = speaker.name || '';
       input.dataset.speakerId = speaker.id;
+      input.addEventListener('input', renderSpeakerTranscript);
       const play = document.createElement('button');
       play.type = 'button';
       play.textContent = '▶ Abspielen';
@@ -142,6 +144,37 @@
       target.append(row);
     });
     $('speaker-editor').hidden = false;
+    renderSpeakerTranscript();
+  };
+  const currentSpeakerNames = () => {
+    const names = {};
+    document.querySelectorAll('#speaker-rows input[data-speaker-id]').forEach((input) => {
+      names[input.dataset.speakerId] = input.value.trim();
+    });
+    return names;
+  };
+  const renderSpeakerTranscript = () => {
+    const target = $('speaker-transcript');
+    if (!target) return;
+    const names = currentSpeakerNames();
+    const fragment = document.createDocumentFragment();
+    reviewSegments.forEach((segment) => {
+      const row = document.createElement('div');
+      row.className = 'segment';
+      const timestamp = document.createElement('span');
+      timestamp.className = 'timestamp';
+      timestamp.textContent = `${formatTime(segment.start)} – ${formatTime(segment.end)}`;
+      const speaker = document.createElement('span');
+      speaker.className = 'speaker';
+      const mapped = segment.speaker_id != null ? names[segment.speaker_id] : '';
+      speaker.textContent = mapped || segment.speaker_id || 'Sprecher';
+      const text = document.createElement('span');
+      text.textContent = segment.text || '';
+      row.append(timestamp, speaker, text);
+      fragment.append(row);
+    });
+    target.textContent = '';
+    target.append(fragment);
   };
   const renderBatchItems = (items) => {
     const target = $('batch-items');
@@ -251,6 +284,10 @@
       const result = await api[`pick_${kind}`]();
       if (result && result.ok) setPath(kind, result.path);
     }));
+  $('open-output').addEventListener('click', async () => {
+    const result = await api.open_output_dir();
+    if (result && !result.ok) setStatus(result.error || 'Ordner konnte nicht geöffnet werden.', true);
+  });
   $('start').addEventListener('click', async () => {
     $('preview').hidden = true;
     $('segments').textContent = '';
@@ -273,6 +310,7 @@
       return;
     }
     reviewId = result.review_id;
+    reviewSegments = result.segments || [];
     $('review-name').value = result.audio_name || '';
     renderSpeakers(result.speakers || []);
     setViewStatus('speaker-status', `${(result.speakers || []).length} Sprecher geladen.`);

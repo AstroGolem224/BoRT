@@ -28,7 +28,7 @@
             <h2>Dateien</h2>
             <label>Audio-Datei <span class="required">*</span><span class="picker"><input id="audio-path" readonly><button id="pick-audio" type="button">Auswählen</button></span></label>
             <label>Marker-Datei <span class="muted">optional</span><span class="picker"><input id="marker-path" readonly><button id="pick-marker" type="button">Auswählen</button></span></label>
-            <label>Ausgabeordner <span class="required">*</span><span class="picker"><input id="output-path" readonly><button id="pick-output" type="button">Auswählen</button></span></label>
+            <label>Ausgabeordner <span class="required">*</span><span class="picker"><input id="output-path" readonly><button id="pick-output" type="button">Auswählen</button><button id="open-output" type="button" title="Im Dateimanager öffnen">📂 Öffnen</button></span></label>
           </div>
           <div class="card">
             <h2>Transkription</h2>
@@ -53,10 +53,16 @@
           <h2>Review</h2>
           <div class="picker"><input id="review-name" readonly placeholder="Keine Review-Datei geladen"><button id="pick-review" type="button">Review-Datei auswählen</button></div>
         </div>
-        <div id="speaker-editor" class="card" hidden>
-          <div class="card-heading"><h2>Sprechernamen</h2><button id="stop-playback" type="button">■ Stop</button></div>
-          <div id="speaker-rows" class="speaker-rows"></div>
-          <div class="actions"><button id="apply-speakers" class="primary" type="button">Anwenden</button></div>
+        <div id="speaker-editor" class="speaker-layout" hidden>
+          <div class="card">
+            <div class="card-heading"><h2>Sprechernamen</h2><button id="stop-playback" type="button">■ Stop</button></div>
+            <div id="speaker-rows" class="speaker-rows"></div>
+            <div class="actions"><button id="apply-speakers" class="primary" type="button">Anwenden</button></div>
+          </div>
+          <div class="card speaker-transcript-card">
+            <h2>Transkript</h2>
+            <div id="speaker-transcript" class="speaker-transcript"></div>
+          </div>
         </div>
       </section>
       <section id="batch" class="view" aria-labelledby="batch-title">

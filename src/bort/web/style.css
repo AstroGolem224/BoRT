@@ -336,6 +336,23 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   box-shadow: var(--pressed-sm);
 }
 .speaker-id { color: var(--accent); font-weight: 600; overflow-wrap: anywhere; }
+
+/* Sprecher-Ansicht: links Editor, rechts live-Transkript. */
+.speaker-layout {
+  display: grid;
+  grid-template-columns: minmax(340px, 460px) 1fr;
+  gap: 24px;
+  align-items: start;
+}
+.speaker-layout > .card { margin: 0; }
+.speaker-transcript-card { position: sticky; top: 0; }
+.speaker-transcript {
+  margin-top: 16px;
+  max-height: 60vh;
+  overflow: auto;
+  padding-right: 6px;
+}
+.speaker-transcript .segment:first-child { padding-top: 0; }
 .batch-item {
   display: flex;
   align-items: center;
@@ -362,4 +379,6 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   .options-card { grid-column: auto; }
   .speaker-edit-row { grid-template-columns: 90px 1fr; }
   .speaker-edit-row button { grid-column: 2; justify-self: end; }
+  .speaker-layout { grid-template-columns: 1fr; }
+  .speaker-transcript-card { position: static; }
 }
