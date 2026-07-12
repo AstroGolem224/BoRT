@@ -124,7 +124,7 @@ nav { display: grid; gap: 12px; }
 
 main { flex: 1; padding: 38px 40px; overflow: auto; }
 
-.view { display: none; max-width: 1180px; margin: 0 auto; }
+.view { display: none; width: 100%; }
 .view.active { display: block; animation: rise 0.4s ease both; }
 
 @keyframes rise {
@@ -327,20 +327,21 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .speaker-rows, .batch-items { display: grid; gap: 14px; margin-top: 20px; }
 .speaker-edit-row {
   display: grid;
-  grid-template-columns: minmax(90px, 0.35fr) minmax(180px, 1fr) auto;
+  grid-template-columns: max-content minmax(120px, 1fr) auto;
   align-items: center;
-  gap: 16px;
+  gap: 12px;
   padding: 14px 16px;
   border-radius: var(--radius-sm);
   background: var(--bg-sink);
   box-shadow: var(--pressed-sm);
 }
-.speaker-id { color: var(--accent); font-weight: 600; overflow-wrap: anywhere; }
+.speaker-id { color: var(--accent); font-weight: 600; white-space: nowrap; font-size: 13px; }
+.speaker-edit-row input { min-width: 0; }
 
 /* Sprecher-Ansicht: links Editor, rechts live-Transkript. */
 .speaker-layout {
   display: grid;
-  grid-template-columns: minmax(340px, 460px) 1fr;
+  grid-template-columns: minmax(440px, 0.42fr) 1fr;
   gap: 24px;
   align-items: start;
 }
