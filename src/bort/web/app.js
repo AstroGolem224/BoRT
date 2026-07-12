@@ -266,6 +266,7 @@
     currentTheme = currentTheme === 'light' ? 'dark' : 'light';
     applyTheme(currentTheme);
     try { localStorage.setItem('bort-theme', currentTheme); } catch (_) { /* egal */ }
+    if (api) api.set_theme(currentTheme);
   });
   document.querySelectorAll('.nav-item').forEach((button) => button.addEventListener('click', async () => {
     const current = document.querySelector('.view.active');
@@ -376,8 +377,16 @@
     api = window.pywebview.api;
     try {
       const initial = await api.initial_state();
-      if (initial.ok) applyInitialState(initial);
-      else setStatus(initial.error || 'Initialisierung fehlgeschlagen.', true);
+      if (initial.ok) {
+        if (initial.theme) {
+          currentTheme = initial.theme;
+          applyTheme(currentTheme);
+          try { localStorage.setItem('bort-theme', currentTheme); } catch (_) { /* egal */ }
+        }
+        applyInitialState(initial);
+      } else {
+        setStatus(initial.error || 'Initialisierung fehlgeschlagen.', true);
+      }
     } catch (error) {
       setStatus(`Bridge nicht verfügbar: ${error}`, true);
     }

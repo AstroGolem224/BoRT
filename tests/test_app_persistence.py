@@ -1,0 +1,60 @@
+"""Persistenz: Theme-Wahl und zuletzt genutzter Review-Ordner."""
+
+import json
+from pathlib import Path
+
+from bort.app import Bridge
+from bort.config import Config
+
+
+def _bridge_with_config(tmp_path: Path) -> Bridge:
+    cfg = Config(path=tmp_path / "settings.json")
+    return Bridge(config=cfg)
+
+
+def test_set_theme_persists_and_initial_state_returns_it(tmp_path):
+    bridge = _bridge_with_config(tmp_path)
+    assert bridge.initial_state()["theme"] == "dark"  # Default
+
+    result = bridge.set_theme("light")
+    assert result == {"ok": True, "theme": "light"}
+
+    # neue Bridge aus derselben Config-Datei -> Wahl bleibt erhalten
+    reloaded = Bridge(config=Config(path=tmp_path / "settings.json"))
+    assert reloaded.initial_state()["theme"] == "light"
+
+
+def test_set_theme_rejects_garbage_defaults_to_dark(tmp_path):
+    bridge = _bridge_with_config(tmp_path)
+    assert bridge.set_theme("bogus")["theme"] == "dark"
+
+
+def test_pick_review_remembers_folder(tmp_path, monkeypatch):
+    audio = tmp_path / "clip.wav"
+    audio.write_bytes(b"")
+    review = tmp_path / "clip.review.json"
+    review.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "audio_path": str(audio),
+                "segments": [],
+                "speaker_map": {},
+                "markers": [],
+                "bookmarks": [],
+                "base_name": "clip",
+                "formats": ["txt"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    bridge = _bridge_with_config(tmp_path)
+    bridge.window = object()
+    monkeypatch.setattr(Bridge, "_dialog", lambda self, *a, **k: str(review))
+
+    assert bridge.pick_review_file()["ok"]
+    # Im Speicher gemerkt (nächster Dialog öffnet dort) ...
+    assert bridge._paths["review"] == review
+    # ... und in der Config persistiert.
+    reloaded = Bridge(config=Config(path=tmp_path / "settings.json"))
+    assert reloaded._paths["review"] == review

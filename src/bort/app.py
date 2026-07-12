@@ -93,6 +93,7 @@ class Bridge:
             "output": self.config.get_path("last_output_dir"),
             "model": self.config.get_path("last_model_path"),
             "watch": self.config.get_path("last_watch_dir"),
+            "review": self.config.get_path("last_review_path"),
         }
 
     def __dir__(self) -> list[str]:
@@ -129,6 +130,7 @@ class Bridge:
             formats = self.config.get("last_formats", "txt,md,csv,tsv")
             return {
                 "ok": True,
+                "theme": self.config.get("last_theme", "dark"),
                 "paths": {key: str(path) if path else "" for key, path in self._paths.items()},
                 "settings": {
                     "backend": self.config.get("last_backend", "whispercpp"),
@@ -186,9 +188,10 @@ class Bridge:
         with self._state_lock:
             review_id = self.speaker_controller.register(registered)
             stored = self.speaker_controller.get(review_id)
+            self._paths["review"] = path
         self.controller.update_config(
             self.config,
-            lambda: self._save_config_path("last_review_dir", path.parent),
+            lambda: self._save_config_path("last_review_path", path),
         )
         segments = [
             {
@@ -211,6 +214,14 @@ class Bridge:
             ],
             "segments": segments,
         }
+
+    def set_theme(self, theme: Any) -> dict[str, Any]:
+        """Persistiert die Hell/Dunkel-Wahl in der Konfiguration."""
+        value = "light" if theme == "light" else "dark"
+        self.controller.update_config(
+            self.config, lambda: self.config.set("last_theme", value)
+        )
+        return {"ok": True, "theme": value}
 
     def open_output_dir(self) -> dict[str, Any]:
         """Öffnet den aktuellen Ausgabeordner im System-Dateimanager."""
