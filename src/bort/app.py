@@ -40,10 +40,13 @@ def _load_glib() -> Any:
 
 GLib = _load_glib()
 
-AUDIO_FILTER = "Audio-Dateien (*.mp3;*.m4a;*.aac;*.wav;*.flac;*.ogg;*.opus;*.wma)"
-JSON_FILTER = "JSON-Dateien (*.json)"
-REVIEW_FILTER = "Review-Dateien (*.review.json)"
-GGML_FILTER = "GGML-Modelle (*.bin;*.gguf)"
+# WICHTIG: pywebviews parse_file_type erlaubt in der Beschreibung nur [\w ]+
+# (Wortzeichen + Leerzeichen). Bindestriche brechen es -> ValueError beim
+# create_file_dialog -> Dialog öffnet nicht. Siehe tests/test_app_file_filters.py.
+AUDIO_FILTER = "Audiodateien (*.mp3;*.m4a;*.aac;*.wav;*.flac;*.ogg;*.opus;*.wma)"
+JSON_FILTER = "JSON Dateien (*.json)"
+REVIEW_FILTER = "Review Dateien (*.review.json)"
+GGML_FILTER = "GGML Modelle (*.bin;*.gguf)"
 ALL_FILES_FILTER = "Alle Dateien (*.*)"
 MAX_QUEUED_LOGS = 300
 
