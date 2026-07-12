@@ -480,11 +480,14 @@ class Bridge:
             current = self._paths.get(key)
             initial = current.parent if current and key != "output" else current
             directory = str(initial or Path.home())
+        # WICHTIG: KEIN Datei-Filter für Ordner-Dialoge. Ein '*.*'-Filter auf
+        # GTK SELECT_FOLDER lässt get_filenames() leer -> der geöffnete Ordner
+        # ist nicht wählbar. Ordner-Aufrufer übergeben filters=() bewusst.
         chosen = self.window.create_file_dialog(
             dialog_type,
             directory=directory,
             allow_multiple=False,
-            file_types=filters or (ALL_FILES_FILTER,),
+            file_types=filters,
         )
         if not chosen:
             return None
