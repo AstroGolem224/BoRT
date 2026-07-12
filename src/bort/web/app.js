@@ -58,7 +58,10 @@
     window.pywebview._jsApiCallback(name, args, id);
   });
   const makeApi = () => new Proxy({}, { get: (_, name) => (...args) => callBridge(name, args) });
-  const setPath = (kind, path) => { $(`${kind}-path`).value = path || ''; };
+  const setPath = (kind, path) => {
+    const el = $(`${kind}-path`);
+    if (el) el.value = path || '';
+  };
   const toggleBackend = () => {
     const whisperx = $('backend').value === 'whisperx';
     $('whispercpp-options').hidden = whisperx;
