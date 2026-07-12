@@ -6,7 +6,6 @@ import json
 import threading
 import uuid
 from collections import deque
-from collections.abc import Callable
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -152,20 +151,16 @@ class Bridge:
         return self._pick_file("model", "GGML-Modell auswählen", (GGML_FILTER, ALL_FILES_FILTER))
 
     def pick_output(self) -> dict[str, Any]:
-        result = self._run_on_gtk(
-            lambda: self._dialog(webview.FOLDER_DIALOG, "Ausgabeordner auswählen", (), "output")
-        )
+        result = self._dialog(webview.FOLDER_DIALOG, "Ausgabeordner auswählen", (), "output")
         return self._record_path("output", result, must_be_directory=True)
 
     def pick_review_file(self) -> dict[str, Any]:
         """Lädt eine Review hinter einer opaken ID, ohne ihren Pfad an JS zu geben."""
-        chosen = self._run_on_gtk(
-            lambda: self._dialog(
-                webview.OPEN_DIALOG,
-                "Review-Datei auswählen",
-                (REVIEW_FILTER, ALL_FILES_FILTER),
-                "review",
-            )
+        chosen = self._dialog(
+            webview.OPEN_DIALOG,
+            "Review-Datei auswählen",
+            (REVIEW_FILTER, ALL_FILES_FILTER),
+            "review",
         )
         if not chosen:
             return {"ok": False, "cancelled": True}
@@ -243,9 +238,7 @@ class Bridge:
         }
 
     def pick_watch_dir(self) -> dict[str, Any]:
-        chosen = self._run_on_gtk(
-            lambda: self._dialog(webview.FOLDER_DIALOG, "Sync-Ordner auswählen", (), "watch")
-        )
+        chosen = self._dialog(webview.FOLDER_DIALOG, "Sync-Ordner auswählen", (), "watch")
         result = self._record_path("watch", chosen, must_be_directory=True)
         if result.get("ok"):
             path = Path(result["path"])
@@ -472,28 +465,8 @@ class Bridge:
         self._schedule_drain()
 
     def _pick_file(self, key: str, title: str, filters: tuple[str, ...]) -> dict[str, Any]:
-        result = self._run_on_gtk(lambda: self._dialog(webview.OPEN_DIALOG, title, filters, key))
+        result = self._dialog(webview.OPEN_DIALOG, title, filters, key)
         return self._record_path(key, result)
-
-    def _run_on_gtk(self, callback: Callable[[], Any]) -> Any:
-        """Führt einen Dialog aus einem js_api-Thread sicher auf dem GTK-Mainloop aus."""
-        completed = threading.Event()
-        result: dict[str, Any] = {"value": None, "error": None}
-
-        def invoke() -> bool:
-            try:
-                result["value"] = callback()
-            except Exception as exc:
-                result["error"] = exc
-            finally:
-                completed.set()
-            return False
-
-        GLib.idle_add(invoke)
-        completed.wait()
-        if result["error"]:
-            return None
-        return result["value"]
 
     def _dialog(
         self, dialog_type: int, title: str, filters: tuple[str, ...], key: str
