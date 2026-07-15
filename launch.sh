@@ -17,4 +17,7 @@ export GDK_BACKEND=x11
 export WEBKIT_DISABLE_DMABUF_RENDERER=1
 export WEBKIT_DISABLE_COMPOSITING_MODE=1
 
-exec uv run python -m bort.app "$@"
+# Direkt das venv-Python, NICHT `uv run`: der KDE-Desktop-Launcher hat ein
+# minimales PATH ohne ~/.local/bin, wo uv liegt -> "uv: not found" -> Icon
+# startet nichts. .venv/bin/python braucht kein uv/PATH.
+exec "$SCRIPT_DIR/.venv/bin/python" -m bort.app "$@"
