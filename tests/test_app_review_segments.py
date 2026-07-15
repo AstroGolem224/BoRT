@@ -44,3 +44,38 @@ def test_pick_review_returns_segments_with_speaker_ids(tmp_path, monkeypatch):
     speaker_ids = {s["id"] for s in result["speakers"]}
     assert segments[0]["speaker_id"] in speaker_ids
     assert segments[0]["text"] == "Hallo"
+
+
+def test_pick_review_returns_audio_url_and_bookmarks(tmp_path, monkeypatch):
+    audio = tmp_path / "clip mit Leer.m4a"  # Leerzeichen -> as_uri() muss encodieren
+    audio.write_bytes(b"")
+    review = tmp_path / "clip.review.json"
+    review.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "audio_path": str(audio),
+                "segments": [],
+                "speaker_map": {},
+                "markers": [],
+                "bookmarks": [
+                    {"time": 12.5, "label": "Wichtig", "type": "note", "color": ""}
+                ],
+                "base_name": "clip",
+                "formats": ["txt"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    bridge = Bridge()
+    bridge.window = object()
+    monkeypatch.setattr(Bridge, "_dialog", lambda self, *a, **k: str(review))
+
+    result = bridge.pick_review_file()
+
+    assert result["audio_url"] == audio.as_uri()
+    assert result["audio_url"].startswith("file://")
+    assert "%20" in result["audio_url"]  # Leerzeichen encodiert
+    assert result["bookmarks"] == [
+        {"time": 12.5, "label": "Wichtig", "type": "note", "color": ""}
+    ]

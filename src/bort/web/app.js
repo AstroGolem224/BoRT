@@ -5,6 +5,7 @@
   let api = null;
   let reviewId = null;
   let reviewSegments = [];
+  let reviewBookmarks = [];
   let activeBatchId = null;
   let pendingBatchItems = [];
 
@@ -139,10 +140,7 @@
       const play = document.createElement('button');
       play.type = 'button';
       play.textContent = '▶ Abspielen';
-      play.addEventListener('click', async () => {
-        const result = await api.play_segment(reviewId, speaker.id);
-        setViewStatus('speaker-status', result.ok ? `${speaker.name || speaker.id} wird abgespielt.` : result.error, !result.ok);
-      });
+      play.addEventListener('click', () => playFromSpeaker(speaker.id, speaker.name || speaker.id));
       row.append(identity, input, play);
       target.append(row);
     });
@@ -164,6 +162,7 @@
     reviewSegments.forEach((segment) => {
       const row = document.createElement('div');
       row.className = 'segment';
+      if (segment.speaker_id != null) row.dataset.speakerId = segment.speaker_id;
       const timestamp = document.createElement('span');
       timestamp.className = 'timestamp';
       timestamp.textContent = `${formatTime(segment.start)} – ${formatTime(segment.end)}`;
@@ -179,6 +178,77 @@
     target.textContent = '';
     target.append(fragment);
   };
+
+  // --- Audio-Player (Sprecher-Ansicht) ---
+  const audioEl = () => $('player-audio');
+  const loadReviewAudio = (url, bookmarks) => {
+    reviewBookmarks = bookmarks || [];
+    const audio = audioEl();
+    const card = $('player-card');
+    if (!url) {
+      card.hidden = true;
+      audio.removeAttribute('src');
+      audio.load();
+      return;
+    }
+    card.hidden = false;
+    audio.src = url;
+    audio.load();
+    $('player-play').textContent = '▶';
+    $('player-progress').style.width = '0%';
+    $('player-head').style.left = '0%';
+    $('player-time').textContent = '00:00';
+    $('player-duration').textContent = '00:00';
+    $('player-markers').textContent = '';
+  };
+  const renderPlayerMarkers = () => {
+    const target = $('player-markers');
+    const audio = audioEl();
+    const dur = audio.duration;
+    target.textContent = '';
+    if (!dur || !isFinite(dur)) return;
+    reviewBookmarks.forEach((mark) => {
+      const tick = document.createElement('div');
+      tick.className = 'player-marker';
+      tick.style.left = `${Math.max(0, Math.min(100, (mark.time / dur) * 100))}%`;
+      const parts = [mark.type, mark.label].filter(Boolean);
+      tick.title = `${formatTime(mark.time)}${parts.length ? ' · ' + parts.join(' – ') : ''}`;
+      target.append(tick);
+    });
+  };
+  const updatePlayerUI = () => {
+    const audio = audioEl();
+    const dur = audio.duration;
+    const frac = dur && isFinite(dur) ? audio.currentTime / dur : 0;
+    $('player-progress').style.width = `${frac * 100}%`;
+    $('player-head').style.left = `${frac * 100}%`;
+    $('player-time').textContent = formatTime(audio.currentTime);
+  };
+  const seekToFraction = (frac) => {
+    const audio = audioEl();
+    if (audio.duration && isFinite(audio.duration)) {
+      audio.currentTime = Math.max(0, Math.min(1, frac)) * audio.duration;
+    }
+  };
+  const scrollTranscriptToSpeaker = (speakerId) => {
+    const target = document.querySelector(`#speaker-transcript .segment[data-speaker-id="${CSS.escape(speakerId)}"]`);
+    if (!target) return;
+    target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    target.classList.add('segment-highlight');
+    setTimeout(() => target.classList.remove('segment-highlight'), 1600);
+  };
+  const playFromSpeaker = (speakerId, label) => {
+    const segment = reviewSegments.find((s) => s.speaker_id === speakerId);
+    const audio = audioEl();
+    if (segment && audio.src) {
+      const start = () => { audio.currentTime = segment.start || 0; audio.play(); };
+      if (audio.readyState >= 1) start();
+      else audio.addEventListener('loadedmetadata', start, { once: true });
+      setViewStatus('speaker-status', `${label} ab ${formatTime(segment.start)}.`);
+    }
+    scrollTranscriptToSpeaker(speakerId);
+  };
+
   const renderBatchItems = (items) => {
     const target = $('batch-items');
     target.textContent = '';
@@ -316,13 +386,37 @@
     reviewId = result.review_id;
     reviewSegments = result.segments || [];
     $('review-name').value = result.audio_name || '';
+    loadReviewAudio(result.audio_url, result.bookmarks);
     renderSpeakers(result.speakers || []);
     setViewStatus('speaker-status', `${(result.speakers || []).length} Sprecher geladen.`);
   });
-  $('stop-playback').addEventListener('click', async () => {
-    await api.stop_playback();
+  $('stop-playback').addEventListener('click', () => {
+    const audio = audioEl();
+    audio.pause();
+    audio.currentTime = 0;
     setViewStatus('speaker-status', 'Wiedergabe gestoppt.');
   });
+  // Audio-Player-Verdrahtung (einmalig)
+  (() => {
+    const audio = audioEl();
+    audio.addEventListener('loadedmetadata', () => {
+      $('player-duration').textContent = formatTime(audio.duration);
+      renderPlayerMarkers();
+    });
+    audio.addEventListener('timeupdate', updatePlayerUI);
+    audio.addEventListener('play', () => { $('player-play').textContent = '⏸'; });
+    audio.addEventListener('pause', () => { $('player-play').textContent = '▶'; });
+    audio.addEventListener('ended', () => { $('player-play').textContent = '▶'; });
+    $('player-play').addEventListener('click', () => {
+      if (!audio.src) return;
+      if (audio.paused) audio.play(); else audio.pause();
+    });
+    const seekFromEvent = (event) => {
+      const rect = $('player-bar').getBoundingClientRect();
+      seekToFraction((event.clientX - rect.left) / rect.width);
+    };
+    $('player-bar').addEventListener('click', seekFromEvent);
+  })();
   $('apply-speakers').addEventListener('click', async () => {
     const renameMap = {};
     document.querySelectorAll('#speaker-rows input[data-speaker-id]').forEach((input) => {

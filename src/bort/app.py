@@ -204,15 +204,27 @@ class Bridge:
                 stored.segments, stored.segment_ids, strict=True
             )
         ]
+        audio_url = review.audio_path.as_uri() if review.audio_path.exists() else ""
+        bookmarks = [
+            {
+                "time": bookmark.time,
+                "label": bookmark.label,
+                "type": bookmark.type,
+                "color": bookmark.color,
+            }
+            for bookmark in stored.bookmarks
+        ]
         return {
             "ok": True,
             "review_id": review_id,
             "audio_name": review.audio_path.name,
+            "audio_url": audio_url,
             "speakers": [
                 {"id": speaker_id, "name": name}
                 for speaker_id, name in review.speaker_map.items()
             ],
             "segments": segments,
+            "bookmarks": bookmarks,
         }
 
     def set_theme(self, theme: Any) -> dict[str, Any]:

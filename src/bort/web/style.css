@@ -354,6 +354,66 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   padding-right: 6px;
 }
 .speaker-transcript .segment:first-child { padding-top: 0; }
+.segment { transition: background 0.4s ease; border-radius: 8px; }
+.segment-highlight { background: var(--accent-glow); }
+
+/* Audio-Player mit Tag-Timeline */
+.player { display: flex; align-items: center; gap: 14px; }
+.player-play {
+  flex: none;
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--accent), var(--accent-soft)) !important;
+  color: #0e2036;
+  font-size: 16px;
+  box-shadow: 4px 4px 10px var(--shadow-dark), -3px -3px 8px var(--shadow-light) !important;
+}
+.player-play:active { box-shadow: var(--pressed-sm) !important; }
+.player-time { color: var(--muted); font: 13px/1 "Fira Mono", ui-monospace, monospace; min-width: 44px; }
+.player-bar {
+  position: relative;
+  flex: 1;
+  height: 16px;
+  border-radius: 99px;
+  background: var(--bg-sink);
+  box-shadow: var(--pressed-sm);
+  cursor: pointer;
+}
+.player-progress {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-radius: 99px;
+  background: linear-gradient(90deg, var(--accent-soft), var(--accent));
+  pointer-events: none;
+}
+.player-markers { position: absolute; inset: 0; pointer-events: none; }
+.player-marker {
+  position: absolute;
+  top: -3px;
+  width: 3px;
+  height: 22px;
+  margin-left: -1px;
+  border-radius: 2px;
+  background: var(--text);
+  opacity: 0.75;
+  box-shadow: 0 0 4px var(--shadow-dark);
+}
+.player-head {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 0 6px var(--accent-glow), 1px 1px 3px var(--shadow-dark);
+  pointer-events: none;
+}
 .batch-item {
   display: flex;
   align-items: center;

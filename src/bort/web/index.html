@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self' file:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
   <title>BoR Transcriber</title>
   <link rel="stylesheet" href="style.css">
 </head>
@@ -52,6 +52,19 @@
         <div class="card">
           <h2>Review</h2>
           <div class="picker"><input id="review-name" readonly placeholder="Keine Review-Datei geladen"><button id="pick-review" type="button">Review-Datei auswählen</button></div>
+        </div>
+        <div id="player-card" class="card" hidden>
+          <div class="player">
+            <button id="player-play" type="button" class="player-play" aria-label="Abspielen/Pause">▶</button>
+            <span id="player-time" class="player-time">00:00</span>
+            <div id="player-bar" class="player-bar" role="slider" aria-label="Audio-Position" tabindex="0">
+              <div id="player-progress" class="player-progress"></div>
+              <div id="player-markers" class="player-markers"></div>
+              <div id="player-head" class="player-head"></div>
+            </div>
+            <span id="player-duration" class="player-time">00:00</span>
+          </div>
+          <audio id="player-audio" preload="metadata"></audio>
         </div>
         <div id="speaker-editor" class="speaker-layout" hidden>
           <div class="card">
