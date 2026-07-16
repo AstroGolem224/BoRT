@@ -714,24 +714,6 @@ def _install_strict_csp_bridge() -> None:
     """
     import webview.platforms.gtk as gtk
 
-    # WebKitGTK blockt audio.play() sonst mit NotAllowedError (Autoplay-Policy),
-    # sobald es nicht direkt aus einer User-Geste kommt (z.B. der Player-Seek
-    # nach loadedmetadata). Die WebView wird daher mit autoplay=ALLOW gebaut.
-    # Subklasse statt Funktion, damit isinstance(..., WebView)-Prüfungen in
-    # pywebview weiter funktionieren.
-    webkit = gtk.webkit
-    _base_webview = webkit.WebView
-
-    class _AutoplayWebView(_base_webview):
-        def __init__(self, *args: Any, **kwargs: Any) -> None:
-            kwargs.setdefault(
-                "website_policies",
-                webkit.WebsitePolicies(autoplay=webkit.AutoplayPolicy.ALLOW),
-            )
-            super().__init__(*args, **kwargs)
-
-    webkit.WebView = _AutoplayWebView
-
     def js_bridge_call(window: Any, func_name: str, params: Any, value_id: str) -> None:
         bridge = window._js_api
         func = getattr(bridge, func_name, None)

@@ -241,9 +241,13 @@
     const segment = reviewSegments.find((s) => s.speaker_id === speakerId);
     const audio = audioEl();
     if (segment && audio.src) {
-      const start = () => { audio.currentTime = segment.start || 0; audio.play(); };
-      if (audio.readyState >= 1) start();
-      else audio.addEventListener('loadedmetadata', start, { once: true });
+      // play() MUSS synchron in der Klick-Geste laufen (WebKitGTK erlaubt sonst
+      // kein Autoplay -> NotAllowedError). Seek best-effort jetzt + erneut,
+      // sobald die Metadaten da sind.
+      const target = segment.start || 0;
+      if (audio.readyState >= 1) audio.currentTime = target;
+      else audio.addEventListener('loadedmetadata', () => { audio.currentTime = target; }, { once: true });
+      audio.play().catch(() => {});
       setViewStatus('speaker-status', `${label} ab ${formatTime(segment.start)}.`);
     }
     scrollTranscriptToSpeaker(speakerId);
