@@ -460,6 +460,9 @@
       else audio.addEventListener('loadedmetadata', () => { audio.currentTime = target; }, { once: true });
       audio.play().catch(() => {});
       setViewStatus('speaker-status', `${label} ab ${formatTime(segment.start)}.`);
+    } else if (!segment) {
+      // Alte v1-Reviews mit doppelten Namen: Segmente dieser ID sind kollabiert.
+      setViewStatus('speaker-status', `Keine Segmente für ${label} (${speakerId}) — Altdatei mit doppelten Namen?`);
     }
     scrollTranscriptToSpeaker(speakerId);
   };

@@ -216,6 +216,8 @@ class Bridge:
             path.parent,
             review.base_name,
             review.formats,
+            segment_ids=list(review.segment_ids),
+            marker_ids=list(review.marker_ids),
             review_path=path,
         )
         with self._state_lock:

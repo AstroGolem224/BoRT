@@ -1,14 +1,14 @@
 """Laden und Validieren von Speaker-Review-Sidecar-Dateien (`*.review.json`)."""
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .markers import Bookmark, SpeakerMarker
 from .speakers import SpeakerSegment
 from .writers import FORMATS
 
-SUPPORTED_SCHEMA_VERSION = 1
+SUPPORTED_SCHEMA_VERSIONS = {1, 2}
 REQUIRED_FIELDS = (
     "schema_version",
     "audio_path",
@@ -34,6 +34,11 @@ class ReviewData:
     bookmarks: list[Bookmark]
     base_name: str
     formats: list[str]
+    # Schema v2: stabile Sprecher-IDs pro Segment/Marker. Leer bei v1-Dateien;
+    # dann rekonstruiert register() sie per Namens-Rückabbildung (verlustbehaftet
+    # bei doppelten Anzeigenamen).
+    segment_ids: list[str | None] = field(default_factory=list)
+    marker_ids: list[str | None] = field(default_factory=list)
 
 
 def load_review(path: Path) -> ReviewData:
@@ -53,10 +58,10 @@ def load_review(path: Path) -> ReviewData:
     missing = [field for field in REQUIRED_FIELDS if field not in data]
     if missing:
         raise ReviewError(f"Review-Datei fehlt Pflichtfeld(er): {', '.join(missing)}")
-    if data["schema_version"] != SUPPORTED_SCHEMA_VERSION:
+    if data["schema_version"] not in SUPPORTED_SCHEMA_VERSIONS:
         raise ReviewError(
             f"Nicht unterstützte schema_version: {data['schema_version']} "
-            f"(erwartet: {SUPPORTED_SCHEMA_VERSION})"
+            f"(erwartet: {sorted(SUPPORTED_SCHEMA_VERSIONS)})"
         )
     if not isinstance(data["audio_path"], str) or not data["audio_path"]:
         raise ReviewError(f"audio_path ist ungültig: {data['audio_path']!r}")
@@ -101,10 +106,31 @@ def load_review(path: Path) -> ReviewData:
             for b in data["bookmarks"]
         ]
         speaker_map = {str(k): str(v) for k, v in data["speaker_map"].items()}
+
+        def read_ids(entries: list[dict]) -> list[str | None]:
+            # Nur IDs übernehmen, die die speaker_map kennt; alles andere -> None
+            # (dann greift die Namens-Rückabbildung in register()).
+            ids: list[str | None] = []
+            for entry in entries:
+                value = entry.get("speaker_id")
+                ids.append(value if isinstance(value, str) and value in speaker_map else None)
+            return ids
+
+        has_ids = any("speaker_id" in entry for entry in data["segments"])
+        segment_ids = read_ids(data["segments"]) if has_ids else []
+        marker_ids = read_ids(data["markers"]) if has_ids else []
     except (KeyError, TypeError, ValueError, AttributeError) as exc:
         raise ReviewError(
             f"Review-Datei enthält ungültige segments/markers/bookmarks/speaker_map-Einträge: {exc}"
         ) from exc
     return ReviewData(
-        audio_path, segments, speaker_map, markers, bookmarks, base_name, list(formats)
+        audio_path,
+        segments,
+        speaker_map,
+        markers,
+        bookmarks,
+        base_name,
+        list(formats),
+        segment_ids,
+        marker_ids,
     )

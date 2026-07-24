@@ -159,21 +159,29 @@ class SpeakerEditController:
             for marker, speaker_id in zip(review.markers, review.marker_ids, strict=True)
         ]
         review_data = {
-            "schema_version": 1,
+            # v2: speaker_id pro Segment/Marker, damit doppelte Anzeigenamen beim
+            # Neuladen nicht auf eine ID kollabieren (sonst tote Abspielen-Buttons).
+            "schema_version": 2,
             "audio_path": str(review.audio_path),
             "segments": [
                 {
                     "start": segment.start,
                     "end": segment.end,
                     "speaker": segment.speaker,
+                    "speaker_id": speaker_id,
                     "text": segment.text,
                 }
-                for segment in segments
+                for segment, speaker_id in zip(segments, review.segment_ids, strict=True)
             ],
             "speaker_map": dict(new_map),
             "markers": [
-                {"start": marker.start, "end": marker.end, "speaker": marker.speaker}
-                for marker in markers
+                {
+                    "start": marker.start,
+                    "end": marker.end,
+                    "speaker": marker.speaker,
+                    "speaker_id": speaker_id,
+                }
+                for marker, speaker_id in zip(markers, review.marker_ids, strict=True)
             ],
             "bookmarks": [
                 {

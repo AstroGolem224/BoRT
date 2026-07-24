@@ -323,14 +323,32 @@ def _review_data(
 ) -> dict[str, Any] | None:
     if params.backend != "whisperx":
         return None
+    # Bei der Ersterstellung sind Anzeigenamen noch eindeutig (rohe SPEAKER_XX),
+    # die Rückabbildung ist hier also verlustfrei.
+    reverse_map = {name: speaker_id for speaker_id, name in (speaker_map or {}).items()}
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "audio_path": str(params.audio_path),
         "segments": [
-            {"start": s.start, "end": s.end, "speaker": s.speaker, "text": s.text} for s in segments
+            {
+                "start": s.start,
+                "end": s.end,
+                "speaker": s.speaker,
+                "speaker_id": reverse_map.get(s.speaker),
+                "text": s.text,
+            }
+            for s in segments
         ],
         "speaker_map": dict(speaker_map or {}),
-        "markers": [{"start": m.start, "end": m.end, "speaker": m.speaker} for m in markers or []],
+        "markers": [
+            {
+                "start": m.start,
+                "end": m.end,
+                "speaker": m.speaker,
+                "speaker_id": reverse_map.get(m.speaker),
+            }
+            for m in markers or []
+        ],
         "bookmarks": [
             {"time": b.time, "label": b.label, "type": b.type, "color": b.color} for b in bookmarks
         ],
