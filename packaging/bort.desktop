@@ -9,3 +9,4 @@ Terminal=false
 Categories=AudioVideo;Audio;
 Keywords=bort;transcribe;whisper;audio;transcription;speech;bookofrecords;
 StartupNotify=true
+StartupWMClass=bort

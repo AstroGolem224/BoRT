@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import threading
 import uuid
 from collections import OrderedDict, deque
@@ -911,6 +912,13 @@ def _saved_dimension(value: Any, default: int, minimum: int) -> int:
 
 def main() -> None:
     """Startet das einzelne lokale pywebview-Fenster."""
+    # WM_CLASS "bort" statt "app.py": KDE ordnet das Fenster damit dem
+    # bort.desktop-Eintrag zu (StartupWMClass) -> richtiger Name + Icon in
+    # Taskbar/Fensterwechsler. sys.argv[0] MUSS mit gesetzt werden, weil
+    # Gtk.init (in webview.start) den prgname sonst wieder aus argv[0] ableitet.
+    sys.argv[0] = "bort"
+    GLib.set_prgname("bort")
+    GLib.set_application_name("BoR Transcriber")
     bridge = Bridge()
     index = resources.files("bort").joinpath("web", "index.html")
     with resources.as_file(index) as index_path:
@@ -931,7 +939,9 @@ def main() -> None:
         window.events.loaded += bridge.on_window_loaded
         window.events.resized += bridge.on_window_resized
         window.events.closed += bridge.on_window_closed
-        webview.start(_install_strict_csp_bridge, gui="gtk")
+        icon = resources.files("bort").joinpath("web", "icon.png")
+        with resources.as_file(icon) as icon_path:
+            webview.start(_install_strict_csp_bridge, gui="gtk", icon=str(icon_path))
 
 
 if __name__ == "__main__":

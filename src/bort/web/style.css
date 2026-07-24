@@ -82,17 +82,11 @@ h1, h2, .brand {
   margin: 0 6px 44px;
 }
 .brand-mark {
-  display: grid;
-  place-items: center;
+  display: block;
   width: 34px;
   height: 34px;
-  border-radius: 10px;
-  clip-path: polygon(25% 5%, 75% 5%, 100% 50%, 75% 95%, 25% 95%, 0 50%);
-  background: linear-gradient(135deg, var(--accent), var(--secondary));
-  color: #031018;
-  font-weight: 700;
-  box-shadow: 4px 4px 9px var(--shadow-dark), -3px -3px 8px var(--shadow-light),
-    0 0 18px -4px var(--accent-glow);
+  border-radius: 9px;
+  box-shadow: 0 0 18px -4px var(--accent-glow);
 }
 
 nav { display: grid; gap: 9px; }
