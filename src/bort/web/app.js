@@ -4,6 +4,7 @@
   let callNumber = 0;
   let api = null;
   let reviewId = null;
+  let reviewBaseName = '';
   let reviewSegments = [];
   let reviewBookmarks = [];
   let activeBatchId = null;
@@ -173,6 +174,7 @@
       const text = document.createElement('span');
       text.textContent = segment.text || '';
       row.append(timestamp, speaker, text);
+      row.addEventListener('click', () => seekToSegment(segment));
       fragment.append(row);
     });
     target.textContent = '';
@@ -229,6 +231,15 @@
     if (audio.duration && isFinite(audio.duration)) {
       audio.currentTime = Math.max(0, Math.min(1, frac)) * audio.duration;
     }
+  };
+  const seekToSegment = (segment) => {
+    const audio = audioEl();
+    if (!audio.src) return;
+    // play() synchron in der Klick-Geste (WebKitGTK-Autoplay-Policy).
+    const target = segment.start || 0;
+    if (audio.readyState >= 1) audio.currentTime = target;
+    else audio.addEventListener('loadedmetadata', () => { audio.currentTime = target; }, { once: true });
+    audio.play().catch(() => {});
   };
   const scrollTranscriptToSpeaker = (speakerId) => {
     const target = document.querySelector(`#speaker-transcript .segment[data-speaker-id="${CSS.escape(speakerId)}"]`);
@@ -389,11 +400,46 @@
     }
     reviewId = result.review_id;
     reviewSegments = result.segments || [];
-    $('review-name').value = result.audio_name || '';
+    reviewBaseName = result.base_name || '';
+    $('review-name').value = reviewBaseName;
     loadReviewAudio(result.audio_url, result.bookmarks);
     renderSpeakers(result.speakers || []);
     setViewStatus('speaker-status', `${(result.speakers || []).length} Sprecher geladen.`);
   });
+  const renameReview = async () => {
+    const input = $('review-name');
+    const newBase = input.value.trim();
+    if (!reviewId || !newBase || newBase === reviewBaseName) {
+      input.value = reviewBaseName;
+      return;
+    }
+    const result = await api.rename_review(reviewId, newBase);
+    if (!result.ok) {
+      input.value = reviewBaseName;
+      setViewStatus('speaker-status', result.error || 'Umbenennen fehlgeschlagen.', true);
+      return;
+    }
+    reviewBaseName = result.base_name;
+    input.value = reviewBaseName;
+    // Audio-Pfad hat sich geändert: src tauschen, Position/Zustand erhalten.
+    const audio = audioEl();
+    if (result.audio_url && audio.src !== result.audio_url) {
+      const time = audio.currentTime;
+      const wasPlaying = !audio.paused && !audio.ended;
+      audio.src = result.audio_url;
+      audio.load();
+      audio.addEventListener('loadedmetadata', () => {
+        audio.currentTime = time;
+        if (wasPlaying) audio.play().catch(() => {});
+      }, { once: true });
+    }
+    setViewStatus('speaker-status', `Dateien umbenannt zu „${result.base_name}".`);
+  };
+  $('review-name').addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') event.target.blur();
+    if (event.key === 'Escape') { event.target.value = reviewBaseName; event.target.blur(); }
+  });
+  $('review-name').addEventListener('blur', () => { renameReview(); });
   $('stop-playback').addEventListener('click', () => {
     const audio = audioEl();
     audio.pause();

@@ -354,6 +354,8 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   padding-right: 6px;
 }
 .speaker-transcript .segment:first-child { padding-top: 0; }
+.speaker-transcript .segment { cursor: pointer; }
+.speaker-transcript .segment:hover { background: var(--accent-glow); }
 .segment { transition: background 0.4s ease; border-radius: 8px; }
 .segment-highlight { background: var(--accent-glow); }
 

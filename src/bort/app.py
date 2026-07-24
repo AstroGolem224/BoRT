@@ -184,6 +184,7 @@ class Bridge:
             path.parent,
             review.base_name,
             review.formats,
+            review_path=path,
         )
         with self._state_lock:
             review_id = self.speaker_controller.register(registered)
@@ -217,6 +218,7 @@ class Bridge:
         return {
             "ok": True,
             "review_id": review_id,
+            "base_name": review.base_name,
             "audio_name": review.audio_path.name,
             "audio_url": audio_url,
             "speakers": [
@@ -271,6 +273,30 @@ class Bridge:
         if player is not None:
             player.stop()
         return {"ok": True}
+
+    def rename_review(self, review_id: Any, new_base: Any) -> dict[str, Any]:
+        """Benennt Review-JSON, Ausgabedateien und Audio auf einen neuen Basisnamen um."""
+        if not isinstance(review_id, str) or not isinstance(new_base, str):
+            return {"ok": False, "error": "Ungültige Eingabe."}
+        try:
+            with self._state_lock:
+                review = self.speaker_controller.rename_base(review_id, new_base)
+                new_path = review.review_path
+                if new_path is not None:
+                    self._paths["review"] = new_path
+        except SpeakerEditError as exc:
+            return {"ok": False, "error": str(exc)}
+        if new_path is not None:
+            self.controller.update_config(
+                self.config,
+                lambda: self._save_config_path("last_review_path", new_path),
+            )
+        return {
+            "ok": True,
+            "base_name": review.base_name,
+            "audio_name": review.audio_path.name,
+            "audio_url": review.audio_path.as_uri() if review.audio_path.exists() else "",
+        }
 
     def apply_speaker_rename(self, review_id: Any, rename_map: Any) -> dict[str, Any]:
         if not isinstance(review_id, str) or not isinstance(rename_map, dict):
@@ -739,7 +765,12 @@ def main() -> None:
     with resources.as_file(index) as index_path:
         window = webview.create_window(
             "BoR Transcriber",
-            url=str(index_path),
+            # file://-URI erzwingen: bei einem blanken Pfad serviert pywebview die
+            # Seite über seinen internen HTTP-Server (Origin http://127.0.0.1:PORT),
+            # und eine http-Seite darf keine file://-Audio-URLs laden -> Player tot
+            # (MEDIA_ERR_SRC_NOT_SUPPORTED). Als file://-Seite ist das Review-Audio
+            # über allow_file_access_from_file_urls (pywebview-Default) erlaubt.
+            url=Path(index_path).resolve().as_uri(),
             js_api=bridge,
             width=1280,
             height=900,

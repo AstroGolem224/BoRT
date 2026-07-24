@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from uuid import uuid4
 
 from ..markers import Bookmark, SpeakerMarker
 from ..speakers import SpeakerSegment
-from ..writers import write_outputs
+from ..writers import FORMATS, write_outputs
 
 
 class SpeakerEditError(Exception):
@@ -27,6 +28,7 @@ class RegisteredReview:
     formats: list[str]
     segment_ids: list[str | None] = field(default_factory=list)
     marker_ids: list[str | None] = field(default_factory=list)
+    review_path: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -59,6 +61,67 @@ class SpeakerEditController:
             return self._reviews[review_id]
         except KeyError as exc:
             raise SpeakerEditError("Unbekannte Review-ID.") from exc
+
+    def rename_base(self, review_id: str, new_base: str) -> RegisteredReview:
+        """Benennt die komplette Dateifamilie (Review-JSON, Outputs, Audio) um."""
+        review = self.get(review_id)
+        new_base = new_base.strip()
+        if not new_base or "/" in new_base or "\\" in new_base or new_base in {".", ".."}:
+            raise SpeakerEditError("Ungültiger Dateiname.")
+        if new_base == review.base_name:
+            return review
+
+        old_json = review.review_path or (
+            review.output_dir / f"{review.base_name}.review.json"
+        )
+        new_json = old_json.with_name(f"{new_base}.review.json")
+        new_audio = review.audio_path.with_name(new_base + review.audio_path.suffix)
+        pairs: list[tuple[Path, Path]] = [(old_json, new_json)]
+        for fmt in review.formats:
+            suffix = FORMATS[fmt][0]
+            pairs.append(
+                (
+                    review.output_dir / f"{review.base_name}{suffix}",
+                    review.output_dir / f"{new_base}{suffix}",
+                )
+            )
+        pairs.append((review.audio_path, new_audio))
+        pairs = [(src, dst) for src, dst in pairs if src != dst]
+
+        for _src, dst in pairs:
+            if dst.exists():
+                raise SpeakerEditError(f"Zieldatei existiert bereits: {dst.name}")
+        renamed: list[tuple[Path, Path]] = []
+        try:
+            for src, dst in pairs:
+                if not src.exists():
+                    continue
+                src.rename(dst)
+                renamed.append((src, dst))
+        except OSError as exc:
+            for src, dst in reversed(renamed):
+                try:
+                    dst.rename(src)
+                except OSError:
+                    pass
+            raise SpeakerEditError(f"Umbenennen fehlgeschlagen: {exc}") from exc
+
+        try:
+            data = json.loads(new_json.read_text(encoding="utf-8"))
+            data["base_name"] = new_base
+            data["audio_path"] = str(new_audio)
+            new_json.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except (OSError, ValueError) as exc:
+            raise SpeakerEditError(
+                f"Review-JSON konnte nicht aktualisiert werden: {exc}"
+            ) from exc
+
+        review.base_name = new_base
+        review.audio_path = new_audio
+        review.review_path = new_json
+        return review
 
     def apply(self, review_id: str, rename_map: dict[str, str]) -> RenameResult:
         """Wendet genau eine Speaker-ID-zu-Name-Map an und überschreibt Outputs."""
