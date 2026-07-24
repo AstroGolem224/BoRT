@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=BoR Transcriber
+Comment=BoRT – Audio-Transkription (Partner-App zu BookofRecords)
+Comment[de]=BoRT – Audio-Transkription (Partner-App zu BookofRecords)
+Exec=/home/itiger013/Dokumente/Github/BoRT/launch.sh
+Icon=/home/itiger013/Dokumente/Github/BoRT/assets/icon-256.png
+Terminal=false
+Categories=AudioVideo;Audio;
+Keywords=bort;transcribe;whisper;audio;transcription;speech;bookofrecords;
+StartupNotify=true
