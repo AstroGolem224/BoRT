@@ -1,5 +1,9 @@
 """Generate the desktop app logo (PNG) inspired by the BoR partner-app logo.
 
+OBSOLET (2026-07-24): assets/icon*.png ist jetzt ein handgemachtes Neon-Icon
+(Waveform + Playhead + "T"). Dieses Skript NICHT mehr ausführen — es würde
+das Icon mit dem alten generierten Design überschreiben.
+
 Style: black background, coral-red accent (~#F97455), audio waveform icon.
 Produces assets/icon.png (1024x1024) and assets/icon-256.png.
 """
