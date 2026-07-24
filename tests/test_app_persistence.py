@@ -58,3 +58,29 @@ def test_pick_review_remembers_folder(tmp_path, monkeypatch):
     # ... und in der Config persistiert.
     reloaded = Bridge(config=Config(path=tmp_path / "settings.json"))
     assert reloaded._paths["review"] == review
+
+
+def test_save_output_options_persists_immediately(tmp_path):
+    bridge = _bridge_with_config(tmp_path)
+    result = bridge.save_output_options(
+        {
+            "formats": ["md", "tsv", "exe"],
+            "keep_wav": True,
+            "verbose": False,
+            "no_diarize": True,
+            "auto_markers": False,
+        }
+    )
+    assert result == {"ok": True}
+
+    reloaded = Bridge(config=Config(path=tmp_path / "settings.json"))
+    settings = reloaded.initial_state()["settings"]
+    assert settings["formats"] == ["md", "tsv"]  # "exe" verworfen
+    assert settings["keep_wav"] is True
+    assert settings["no_diarize"] is True
+    assert settings["auto_markers"] is False
+
+
+def test_save_output_options_rejects_non_dict(tmp_path):
+    bridge = _bridge_with_config(tmp_path)
+    assert bridge.save_output_options("quatsch")["ok"] is False

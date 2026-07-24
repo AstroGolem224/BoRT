@@ -13,11 +13,11 @@
     <aside class="sidebar" aria-label="Navigation">
       <div class="brand"><span class="brand-mark">B</span><span>BoR Transcriber</span></div>
       <nav>
-        <button class="nav-item active" data-view="transcribe">Transkribieren</button>
-        <button class="nav-item" data-view="speakers">Sprecher</button>
-        <button class="nav-item" data-view="batch">Batch</button>
+        <button class="nav-item active" data-view="transcribe"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-4-8v4m8-4v4M6 14a6 6 0 0 0 12 0M12 20v2m-4 0h8"/></svg><span>Transkribieren</span></button>
+        <button class="nav-item" data-view="batch"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v5H4zM4 14h16v5H4zM7 7.5h.01M7 16.5h.01"/></svg><span>Batch</span></button>
+        <button class="nav-item" data-view="speakers"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 20v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 10a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm7-1a3 3 0 0 0 0-6m2 11a4 4 0 0 1 4 4v2"/></svg><span>Sprecher</span></button>
       </nav>
-      <p class="sidebar-foot">Lokale Transkription</p>
+      <p class="sidebar-foot"><span class="status-dot"></span>Lokale Transkription</p>
     </aside>
     <main>
       <section id="transcribe" class="view active" aria-labelledby="transcribe-title">
@@ -25,19 +25,19 @@
         <p id="status" class="status" role="status">Bereit.</p>
         <div class="form-grid">
           <div class="card files-card">
-            <h2>Dateien</h2>
+            <h2><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2 2h9v11H3z"/></svg>Dateien</h2>
             <label>Audio-Datei <span class="required">*</span><span class="picker"><input id="audio-path" readonly><button id="pick-audio" type="button">Auswählen</button></span></label>
             <label>Marker-Datei <span class="muted">optional</span><span class="picker"><input id="marker-path" readonly><button id="pick-marker" type="button">Auswählen</button></span></label>
             <label>Ausgabeordner <span class="required">*</span><span class="picker"><input id="output-path" readonly><button id="pick-output" type="button">Auswählen</button><button id="open-output" type="button" title="Im Dateimanager öffnen">📂 Öffnen</button></span></label>
           </div>
           <div class="card">
-            <h2>Transkription</h2>
+            <h2><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-4-8v4m8-4v4M6 14a6 6 0 0 0 12 0"/></svg>Transkription</h2>
             <div class="two-cols"><label>Backend<select id="backend"><option value="whispercpp">whisper.cpp (CPU)</option><option value="whisperx">whisperX (GPU + Diarization)</option></select></label><label>Sprache<select id="language"><option value="auto">Automatisch</option><option value="de">Deutsch</option><option value="en">Englisch</option><option value="fr">Französisch</option><option value="es">Spanisch</option><option value="it">Italienisch</option><option value="pt">Portugiesisch</option><option value="nl">Niederländisch</option><option value="pl">Polnisch</option><option value="ru">Russisch</option><option value="zh">Chinesisch</option><option value="ja">Japanisch</option></select></label></div>
             <div id="whispercpp-options"><label>GGML-Modell <span class="required">*</span><span class="picker"><input id="model-path" readonly><button id="pick-model" type="button">Auswählen</button></span></label><label>Aufgabe<select id="task"><option value="transcribe">Originalsprache beibehalten</option><option value="translate">Nach Englisch übersetzen</option></select></label></div>
             <div id="whisperx-options" hidden><div class="two-cols"><label>WhisperX-Modell<select id="whisperx-model"><option>large-v3</option><option>large-v2</option><option>medium</option><option>small</option><option>base</option><option>tiny</option></select></label><label>Aufgabe<select id="whisperx-task" disabled><option>Originalsprache beibehalten</option></select></label></div><div class="two-cols"><label>Min. Sprecher<input id="min-speakers" type="number" min="1" inputmode="numeric"></label><label>Max. Sprecher<input id="max-speakers" type="number" min="1" inputmode="numeric"></label></div></div>
           </div>
           <div class="card options-card">
-            <h2>Ausgabe &amp; Optionen</h2>
+            <h2><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5zM19 12l2-1-2-4-2 .5-1.5-1.5.5-2h-4l-.5 2L9 7.5 7 7 5 11l2 1-2 1 2 4 2-.5 1.5 1.5-.5 2h4l.5-2 1.5-1.5 2 .5 2-4z"/></svg>Ausgabe &amp; Optionen</h2>
             <fieldset><legend>Formate <span class="required">*</span></legend><label class="check"><input type="checkbox" name="format" value="txt" checked> TXT</label><label class="check"><input type="checkbox" name="format" value="md" checked> Markdown</label><label class="check"><input type="checkbox" name="format" value="csv" checked> CSV</label><label class="check"><input type="checkbox" name="format" value="tsv" checked> TSV</label></fieldset>
             <label class="check"><input id="keep-wav" type="checkbox"> WAV behalten</label><label class="check"><input id="verbose" type="checkbox"> Ausführliches Protokoll</label><div id="diarize-options"><label class="check"><input id="no-diarize" type="checkbox"> Keine Sprechertrennung</label><label class="check"><input id="auto-markers" type="checkbox" checked> Marker automatisch speichern</label></div>
           </div>
@@ -50,14 +50,16 @@
         <header><h1 id="speakers-title">Sprecher</h1><p>Namen in einem fertigen Review prüfen und ändern.</p></header>
         <p id="speaker-status" class="status" role="status">Review-Datei auswählen.</p>
         <div class="card">
-          <h2>Review</h2>
+          <h2><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4zM8 9h8M8 13h6"/></svg>Review</h2>
           <div class="picker"><input id="review-name" placeholder="Keine Review-Datei geladen"><button id="pick-review" type="button">Review-Datei auswählen</button></div>
         </div>
         <div id="player-card" class="card" hidden>
           <div class="player">
             <button id="player-play" type="button" class="player-play" aria-label="Abspielen/Pause">▶</button>
             <span id="player-time" class="player-time">00:00</span>
-            <div id="player-bar" class="player-bar" role="slider" aria-label="Audio-Position" tabindex="0">
+            <div id="player-bar" class="player-bar waveform-loading" role="slider" aria-label="Audio-Position" aria-valuemin="0" aria-valuemax="0" aria-valuenow="0" aria-valuetext="00:00 von 00:00" tabindex="0">
+              <canvas id="player-wave" aria-hidden="true"></canvas>
+              <div id="player-labels" class="player-labels" aria-hidden="true"></div>
               <div id="player-progress" class="player-progress"></div>
               <div id="player-markers" class="player-markers"></div>
               <div id="player-head" class="player-head"></div>
@@ -68,12 +70,12 @@
         </div>
         <div id="speaker-editor" class="speaker-layout" hidden>
           <div class="card">
-            <div class="card-heading"><h2>Sprechernamen</h2><button id="stop-playback" type="button">■ Stop</button></div>
+            <div class="card-heading"><h2><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm7-1a3 3 0 0 0 0-6M2 21v-2a5 5 0 0 1 5-5h4a5 5 0 0 1 5 5v2"/></svg>Sprechernamen</h2><button id="stop-playback" type="button">■ Stop</button></div>
             <div id="speaker-rows" class="speaker-rows"></div>
             <div class="actions"><button id="apply-speakers" class="primary" type="button">Anwenden</button></div>
           </div>
           <div class="card speaker-transcript-card">
-            <h2>Transkript</h2>
+            <h2><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h14v18H5zM8 8h8M8 12h8M8 16h5"/></svg>Transkript</h2>
             <div id="speaker-transcript" class="speaker-transcript"></div>
           </div>
         </div>
@@ -82,12 +84,12 @@
         <header><h1 id="batch-title">Batch</h1><p>Neue Aufnahmen aus einem Sync-Ordner nacheinander verarbeiten.</p></header>
         <p id="batch-status" class="status" role="status">Sync-Ordner auswählen und scannen.</p>
         <div class="card">
-          <h2>Quelle</h2>
+          <h2><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2 2h9v11H3z"/></svg>Quelle</h2>
           <label>Sync-Ordner<span class="picker"><input id="watch-path" readonly><button id="pick-watch" type="button">Sync-Ordner wählen</button><button id="scan-batch" type="button">Scannen</button></span></label>
           <p id="unstable-count" class="muted"></p>
         </div>
         <div class="card">
-          <div class="card-heading"><h2>Ausstehende Dateien</h2><span id="pending-count" class="muted">0 Dateien</span></div>
+          <div class="card-heading"><h2><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v5H4zM4 14h16v5H4z"/></svg>Ausstehende Dateien</h2><span id="pending-count" class="muted">0 Dateien</span></div>
           <div id="batch-items" class="batch-items"><p class="empty-state">Noch nicht gescannt.</p></div>
         </div>
         <div class="card run-card">
@@ -99,6 +101,7 @@
       </section>
     </main>
   </div>
+  <script src="wave_math.js"></script>
   <script src="app.js"></script>
 </body>
 </html>

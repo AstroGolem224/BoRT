@@ -7,12 +7,23 @@
   let reviewBaseName = '';
   let reviewSegments = [];
   let reviewBookmarks = [];
+  let waveformResult = null;
+  let waveformRequest = null;
+  let mediaMetadataReady = false;
+  let mediaFailed = false;
+  let waveCache = null;
   let activeBatchId = null;
   let pendingBatchItems = [];
 
   // Theme (hell/dunkel) – rein clientseitig via localStorage, Default dunkel.
   const applyTheme = (theme) => {
     document.documentElement.setAttribute('data-theme', theme === 'light' ? 'light' : 'dark');
+    if (window.BortWave && document.getElementById('player-wave')) {
+      requestAnimationFrame(() => {
+        waveCache = null;
+        renderWaveform();
+      });
+    }
   };
   let currentTheme = 'dark';
   try { currentTheme = localStorage.getItem('bort-theme') || 'dark'; } catch (_) { currentTheme = 'dark'; }
@@ -127,17 +138,24 @@
   const renderSpeakers = (speakers) => {
     const target = $('speaker-rows');
     target.textContent = '';
+    const colors = speakerColorMap();
     speakers.forEach((speaker) => {
       const row = document.createElement('div');
       row.className = 'speaker-edit-row';
       const identity = document.createElement('span');
       identity.className = 'speaker-id';
       identity.textContent = speaker.id;
+      // Gleiche Farbe wie das Sprecher-Segment in der Waveform.
+      const color = colors.get(speaker.id);
+      if (color) identity.style.color = color;
       const input = document.createElement('input');
       input.type = 'text';
       input.value = speaker.name || '';
       input.dataset.speakerId = speaker.id;
-      input.addEventListener('input', renderSpeakerTranscript);
+      input.addEventListener('input', () => {
+        renderSpeakerTranscript();
+        renderWaveformLabels();
+      });
       const play = document.createElement('button');
       play.type = 'button';
       play.textContent = '▶ Abspielen';
@@ -147,6 +165,7 @@
     });
     $('speaker-editor').hidden = false;
     renderSpeakerTranscript();
+    renderWaveformLabels();
   };
   const currentSpeakerNames = () => {
     const names = {};
@@ -183,10 +202,188 @@
 
   // --- Audio-Player (Sprecher-Ansicht) ---
   const audioEl = () => $('player-audio');
+  const speakerPalette = [
+    '#22d3ee', '#8b5cf6', '#ec4899', '#06b6d4', '#a855f7',
+    '#f472b6', '#38bdf8', '#c026d3', '#2dd4bf', '#818cf8',
+  ];
+  const currentTimelineDuration = () => {
+    const audio = audioEl();
+    if (mediaMetadataReady && Number.isFinite(audio.duration) && audio.duration > 0) return audio.duration;
+    if (mediaFailed && waveformResult && Number.isFinite(waveformResult.duration)) return waveformResult.duration;
+    return 0;
+  };
+  const activeRequestIsCurrent = () => {
+    const audio = audioEl();
+    return waveformRequest && window.BortWave.isCurrentReview(
+      waveformRequest.reviewId, reviewId, waveformRequest.src, audio.src,
+    );
+  };
+  const updateAria = () => {
+    const audio = audioEl();
+    const values = window.BortWave.ariaValues(audio.currentTime, currentTimelineDuration());
+    const bar = $('player-bar');
+    Object.entries(values).forEach(([name, value]) => bar.setAttribute(`aria-${name}`, value));
+  };
+  const speakerColorMap = () => {
+    const colors = new Map();
+    reviewSegments.forEach((segment) => {
+      const key = segment.speaker_id;
+      if (!colors.has(key)) colors.set(key, speakerPalette[colors.size % speakerPalette.length]);
+    });
+    return colors;
+  };
+  const renderWaveformLabels = () => {
+    const target = $('player-labels');
+    target.textContent = '';
+    const duration = currentTimelineDuration();
+    const bar = $('player-bar');
+    if (!duration || !waveformResult || bar.clientWidth <= 0) return;
+    const normalized = window.BortWave.normalizeSegments(reviewSegments, duration);
+    const blocks = window.BortWave.mergeBlocks(normalized, 2);
+    const names = currentSpeakerNames();
+    const context = $('player-wave').getContext('2d');
+    context.font = '700 10px sans-serif';
+    const labels = window.BortWave.layoutLabels(
+      blocks,
+      duration,
+      bar.clientWidth,
+      (speakerId) => names[speakerId] || speakerId || 'Sprecher',
+      (text) => context.measureText(text).width,
+    );
+    labels.forEach((label) => {
+      const node = document.createElement('span');
+      node.className = 'player-label';
+      node.textContent = label.text;
+      node.style.left = `${label.center}px`;
+      node.style.width = `${label.right - label.left}px`;
+      target.append(node);
+    });
+  };
+  const buildWaveCache = (duration) => {
+    const bar = $('player-bar');
+    const canvas = $('player-wave');
+    const width = bar.clientWidth;
+    const height = bar.clientHeight;
+    if (!width || !height || !waveformResult) return null;
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    canvas.width = Math.round(width * dpr);
+    canvas.height = Math.round(height * dpr);
+    const normalized = window.BortWave.normalizeSegments(reviewSegments, duration);
+    const colors = speakerColorMap();
+    const createLayer = (alpha) => {
+      const layer = document.createElement('canvas');
+      layer.width = canvas.width;
+      layer.height = canvas.height;
+      const context = layer.getContext('2d');
+      context.scale(dpr, dpr);
+      context.globalAlpha = alpha;
+      context.lineWidth = Math.max(1, width / Math.max(waveformResult.peaks.length, 1) * 0.72);
+      context.lineCap = 'round';
+      const center = height * 0.57;
+      const amplitude = height * 0.32;
+      waveformResult.peaks.forEach((peak, index) => {
+        const start = index / waveformResult.peaks.length * duration;
+        const end = (index + 1) / waveformResult.peaks.length * duration;
+        const segment = window.BortWave.bucketSpeaker(start, end, normalized);
+        context.strokeStyle = segment ? colors.get(segment.speaker_id) : '#526078';
+        const x = (index + 0.5) / waveformResult.peaks.length * width;
+        const low = Math.max(-1, Math.min(1, Number(peak[0]) || 0));
+        const high = Math.max(-1, Math.min(1, Number(peak[1]) || 0));
+        context.beginPath();
+        context.moveTo(x, center - high * amplitude);
+        context.lineTo(x, center - low * amplitude);
+        context.stroke();
+      });
+      return layer;
+    };
+    return { width, height, dpr, dim: createLayer(0.34), bright: createLayer(0.98) };
+  };
+  const renderWaveform = () => {
+    const canvas = $('player-wave');
+    if (!canvas || !waveformResult) return;
+    const duration = currentTimelineDuration();
+    if (!duration || !activeRequestIsCurrent()) return;
+    const bar = $('player-bar');
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    if (!waveCache || waveCache.width !== bar.clientWidth || waveCache.height !== bar.clientHeight
+        || waveCache.dpr !== dpr) {
+      waveCache = buildWaveCache(duration);
+      renderWaveformLabels();
+    }
+    if (!waveCache) return;
+    const context = canvas.getContext('2d');
+    context.setTransform(1, 0, 0, 1, 0, 0);
+    context.clearRect(0, 0, canvas.width, canvas.height);
+    context.drawImage(waveCache.dim, 0, 0);
+    const fraction = mediaFailed ? 0 : Math.max(0, Math.min(1, audioEl().currentTime / duration));
+    const clipWidth = Math.round(canvas.width * fraction);
+    if (clipWidth > 0) {
+      context.save();
+      context.beginPath();
+      context.rect(0, 0, clipWidth, canvas.height);
+      context.clip();
+      context.drawImage(waveCache.bright, 0, 0);
+      context.restore();
+    }
+    bar.classList.remove('waveform-loading');
+    bar.classList.add('waveform-ready');
+    renderPlayerMarkers();
+    updateAria();
+  };
+  const tryRenderWaveform = () => {
+    if (!waveformResult || !activeRequestIsCurrent()) return;
+    if (!mediaFailed && !mediaMetadataReady) return;
+    const audio = audioEl();
+    if (!mediaFailed && (!Number.isFinite(audio.duration) || audio.duration <= 0)) return;
+    if (!mediaFailed && waveformResult.duration > 0) {
+      const mismatch = Math.abs(waveformResult.duration - audio.duration) / audio.duration;
+      if (mismatch > 0.02) {
+        console.warn(`Waveform-/Mediendauer weichen um ${(mismatch * 100).toFixed(1)} % ab.`);
+      }
+    }
+    renderWaveform();
+  };
+  const requestReviewWaveform = () => {
+    if (!api || !reviewId || !audioEl().src) return;
+    const captured = { reviewId, src: audioEl().src };
+    waveformRequest = captured;
+    api.get_waveform(captured.reviewId).then((result) => {
+      if (!window.BortWave.isCurrentReview(captured.reviewId, reviewId, captured.src, audioEl().src)) return;
+      if (!result || !result.ok) {
+        waveformResult = null;
+        $('player-bar').classList.remove('waveform-loading');
+        setViewStatus('speaker-status', result && result.error
+          ? `Waveform nicht verfügbar: ${result.error}` : 'Waveform nicht verfügbar.');
+        return;
+      }
+      waveformResult = {
+        duration: Number(result.duration) || 0,
+        peaks: Array.isArray(result.peaks) ? result.peaks : [],
+      };
+      waveCache = null;
+      tryRenderWaveform();
+    }).catch((error) => {
+      if (!window.BortWave.isCurrentReview(captured.reviewId, reviewId, captured.src, audioEl().src)) return;
+      waveformResult = null;
+      $('player-bar').classList.remove('waveform-loading');
+      setViewStatus('speaker-status', `Waveform nicht verfügbar: ${error}`);
+    });
+  };
   const loadReviewAudio = (url, bookmarks) => {
     reviewBookmarks = bookmarks || [];
     const audio = audioEl();
     const card = $('player-card');
+    waveformResult = null;
+    waveformRequest = null;
+    waveCache = null;
+    mediaMetadataReady = false;
+    mediaFailed = false;
+    $('player-wave').getContext('2d').clearRect(0, 0, $('player-wave').width, $('player-wave').height);
+    $('player-labels').textContent = '';
+    $('player-bar').classList.add('waveform-loading');
+    $('player-bar').classList.remove('waveform-ready');
+    $('player-bar').removeAttribute('aria-disabled');
+    $('player-play').disabled = false;
     if (!url) {
       card.hidden = true;
       audio.removeAttribute('src');
@@ -202,11 +399,12 @@
     $('player-time').textContent = '00:00';
     $('player-duration').textContent = '00:00';
     $('player-markers').textContent = '';
+    updateAria();
   };
   const renderPlayerMarkers = () => {
     const target = $('player-markers');
     const audio = audioEl();
-    const dur = audio.duration;
+    const dur = currentTimelineDuration();
     target.textContent = '';
     if (!dur || !isFinite(dur)) return;
     reviewBookmarks.forEach((mark) => {
@@ -225,10 +423,12 @@
     $('player-progress').style.width = `${frac * 100}%`;
     $('player-head').style.left = `${frac * 100}%`;
     $('player-time').textContent = formatTime(audio.currentTime);
+    updateAria();
+    if (waveformResult) renderWaveform();
   };
   const seekToFraction = (frac) => {
     const audio = audioEl();
-    if (audio.duration && isFinite(audio.duration)) {
+    if (!mediaFailed && audio.duration && isFinite(audio.duration)) {
       audio.currentTime = Math.max(0, Math.min(1, frac)) * audio.duration;
     }
   };
@@ -363,11 +563,28 @@
     }
     document.querySelectorAll('.nav-item').forEach((item) => item.classList.toggle('active', item === button));
     document.querySelectorAll('.view').forEach((view) => view.classList.toggle('active', view.id === button.dataset.view));
+    if (button.dataset.view === 'speakers') {
+      requestAnimationFrame(() => {
+        waveCache = null;
+        renderWaveform();
+      });
+    }
     if (activeBatchId && button.dataset.view !== 'batch') {
       setStatus('Der Batch läuft im Hintergrund weiter. Status und Abbruch bleiben in der Batch-Ansicht verfügbar.');
     }
   }));
   $('backend').addEventListener('change', toggleBackend);
+  // Ausgabeoptionen sofort persistieren, nicht erst beim Transkriptions-Start.
+  const persistOutputOptions = () => {
+    if (!api) return;
+    const s = formSettings();
+    api.save_output_options({
+      formats: s.formats, keep_wav: s.keep_wav, verbose: s.verbose,
+      no_diarize: s.no_diarize, auto_markers: s.auto_markers,
+    }).catch(() => {});
+  };
+  document.querySelectorAll('input[name="format"], #keep-wav, #verbose, #no-diarize, #auto-markers')
+    .forEach((input) => input.addEventListener('change', persistOutputOptions));
   [['audio', 'pick-audio'], ['marker', 'pick-marker'], ['output', 'pick-output'], ['model', 'pick-model']]
     .forEach(([kind, id]) => $(id).addEventListener('click', async () => {
       const result = await api[`pick_${kind}`]();
@@ -405,6 +622,7 @@
     loadReviewAudio(result.audio_url, result.bookmarks);
     renderSpeakers(result.speakers || []);
     setViewStatus('speaker-status', `${(result.speakers || []).length} Sprecher geladen.`);
+    requestReviewWaveform();
   });
   const renameReview = async () => {
     const input = $('review-name');
@@ -432,6 +650,14 @@
         audio.currentTime = time;
         if (wasPlaying) audio.play().catch(() => {});
       }, { once: true });
+      waveformResult = null;
+      waveformRequest = null;
+      waveCache = null;
+      mediaMetadataReady = false;
+      mediaFailed = false;
+      $('player-bar').classList.add('waveform-loading');
+      $('player-bar').classList.remove('waveform-ready');
+      requestReviewWaveform();
     }
     setViewStatus('speaker-status', `Dateien umbenannt zu „${result.base_name}".`);
   };
@@ -450,22 +676,60 @@
   (() => {
     const audio = audioEl();
     audio.addEventListener('loadedmetadata', () => {
+      mediaMetadataReady = true;
+      mediaFailed = false;
+      $('player-play').disabled = false;
+      $('player-bar').removeAttribute('aria-disabled');
       $('player-duration').textContent = formatTime(audio.duration);
       renderPlayerMarkers();
+      tryRenderWaveform();
+    });
+    audio.addEventListener('error', () => {
+      if (!reviewId || !audio.src) return;
+      mediaFailed = true;
+      mediaMetadataReady = false;
+      audio.pause();
+      $('player-play').disabled = true;
+      $('player-bar').setAttribute('aria-disabled', 'true');
+      setViewStatus(
+        'speaker-status',
+        'Das Audioformat kann vom Player nicht wiedergegeben werden; die Waveform bleibt als Vorschau sichtbar.',
+      );
+      if (waveformResult && waveformResult.duration > 0) {
+        $('player-duration').textContent = formatTime(waveformResult.duration);
+      }
+      tryRenderWaveform();
     });
     audio.addEventListener('timeupdate', updatePlayerUI);
     audio.addEventListener('play', () => { $('player-play').textContent = '⏸'; });
     audio.addEventListener('pause', () => { $('player-play').textContent = '▶'; });
     audio.addEventListener('ended', () => { $('player-play').textContent = '▶'; });
     $('player-play').addEventListener('click', () => {
-      if (!audio.src) return;
+      if (!audio.src || mediaFailed) return;
       if (audio.paused) audio.play(); else audio.pause();
     });
     const seekFromEvent = (event) => {
       const rect = $('player-bar').getBoundingClientRect();
-      seekToFraction((event.clientX - rect.left) / rect.width);
+      if (!mediaFailed && rect.width > 0) seekToFraction((event.clientX - rect.left) / rect.width);
     };
     $('player-bar').addEventListener('click', seekFromEvent);
+    $('player-bar').addEventListener('keydown', (event) => {
+      if (mediaFailed) return;
+      const target = window.BortWave.keyboardSeekTarget(
+        event.key, audio.currentTime, audio.duration, 5,
+      );
+      if (target === null) return;
+      event.preventDefault();
+      audio.currentTime = target;
+      updatePlayerUI();
+    });
+    if (typeof ResizeObserver !== 'undefined') {
+      const observer = new ResizeObserver(() => {
+        waveCache = null;
+        renderWaveform();
+      });
+      observer.observe($('player-bar'));
+    }
   })();
   $('apply-speakers').addEventListener('click', async () => {
     const renameMap = {};

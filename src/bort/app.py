@@ -6,7 +6,8 @@ import json
 import subprocess
 import threading
 import uuid
-from collections import deque
+from collections import OrderedDict, deque
+from concurrent.futures import Future
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,7 @@ from .controller.speaker_edit import (
 )
 from .speaker_review import ReviewError, load_review
 from .speakers import SpeakerSegment
+from .waveform import WaveformError, extract_peaks, terminate_process
 
 
 def _load_glib() -> Any:
@@ -50,6 +52,7 @@ REVIEW_FILTER = "Review Dateien (*.review.json)"
 GGML_FILTER = "GGML Modelle (*.bin;*.gguf)"
 ALL_FILES_FILTER = "Alle Dateien (*.*)"
 MAX_QUEUED_LOGS = 300
+MAX_WAVEFORM_CACHE = 4
 
 
 def _representative_segment(
@@ -87,6 +90,16 @@ class Bridge:
         self._active_batch_id: str | None = None
         self._pending_batch: list[Any] = []
         self._player: AudioPlayer | None = None
+        self._window_size: tuple[int, int] | None = None
+        self._waveform_processes: dict[
+            subprocess.Popen[bytes], threading.RLock
+        ] = {}
+        self._waveform_cache: OrderedDict[
+            tuple[Path, int, int], tuple[float, list[list[float]]]
+        ] = OrderedDict()
+        self._waveform_inflight: dict[
+            tuple[Path, int, int], Future[tuple[float, list[list[float]]]]
+        ] = {}
         self._paths: dict[str, Path | None] = {
             "audio": self.config.get_path("last_audio_path"),
             "marker": self.config.get_path("last_marker_path"),
@@ -113,16 +126,35 @@ class Bridge:
             self._window_loaded = True
         self._schedule_drain()
 
+    def on_window_resized(self, width: Any, height: Any) -> None:
+        """Merkt sich die aktuelle Fenstergröße für den nächsten Start."""
+        try:
+            size = (int(width), int(height))
+        except (TypeError, ValueError):
+            return
+        with self._state_lock:
+            self._window_size = size
+
     def on_window_closed(self, *_args: Any) -> None:
         """Verwirft wartende Ereignisse, sobald das Fenster geschlossen ist."""
         with self._state_lock:
             self._closed = True
+            window_size = self._window_size
+        if window_size is not None:
+            def save_size() -> None:
+                self.config.set("last_window_width", window_size[0])
+                self.config.set("last_window_height", window_size[1])
+            self.controller.update_config(self.config, save_size)
+        with self._state_lock:
             self._events.clear()
             self._latest_progress = None
             player = self._player
             self._player = None
+            waveform_processes = list(self._waveform_processes.items())
         if player is not None:
             player.stop()
+        for process, process_lock in waveform_processes:
+            terminate_process(process, process_lock)
 
     def initial_state(self) -> dict[str, Any]:
         """Liefert den durch das JS-Readiness-Gate angeforderten Startzustand."""
@@ -228,6 +260,109 @@ class Bridge:
             "segments": segments,
             "bookmarks": bookmarks,
         }
+
+    def _register_waveform_process(
+        self,
+        process: subprocess.Popen[bytes],
+        process_lock: threading.RLock,
+    ) -> bool:
+        """Registriert ffmpeg atomar oder lehnt ihn nach Fensterschluss ab."""
+        with self._state_lock:
+            if self._closed:
+                return False
+            self._waveform_processes[process] = process_lock
+            return True
+
+    def _unregister_waveform_process(self, process: subprocess.Popen[bytes]) -> None:
+        """Entfernt einen beendeten Waveform-Prozess aus der Registry."""
+        with self._state_lock:
+            self._waveform_processes.pop(process, None)
+
+    def get_waveform(self, review_id: Any) -> dict[str, Any]:
+        """Liefert gecachte Peaks für das Audio einer registrierten Review."""
+        if not isinstance(review_id, str):
+            return {"ok": False, "error": "Ungültige Review-ID."}
+        try:
+            with self._state_lock:
+                if self._closed:
+                    raise WaveformError("Das Fenster wurde bereits geschlossen.")
+                review = self.speaker_controller.get(review_id)
+                audio_path = review.audio_path.resolve()
+            stat = audio_path.stat()
+        except (SpeakerEditError, OSError, WaveformError) as exc:
+            return {"ok": False, "error": str(exc)}
+
+        key = (audio_path, stat.st_size, stat.st_mtime_ns)
+        with self._state_lock:
+            cached = self._waveform_cache.get(key)
+            if cached is not None:
+                self._waveform_cache.move_to_end(key)
+                duration, peaks = cached
+                return {"ok": True, "duration": duration, "peaks": peaks}
+            future = self._waveform_inflight.get(key)
+            leader = future is None
+            if future is None:
+                future = Future()
+                self._waveform_inflight[key] = future
+
+        if not leader:
+            try:
+                duration, peaks = future.result()
+                return {"ok": True, "duration": duration, "peaks": peaks}
+            except Exception as exc:
+                return {"ok": False, "error": str(exc)}
+
+        result: tuple[float, list[list[float]]] | None = None
+        extraction_error: Exception | None = None
+        try:
+            result = extract_peaks(
+                audio_path,
+                register_process=self._register_waveform_process,
+                unregister_process=self._unregister_waveform_process,
+            )
+            with self._state_lock:
+                self._waveform_cache[key] = result
+                self._waveform_cache.move_to_end(key)
+                while len(self._waveform_cache) > MAX_WAVEFORM_CACHE:
+                    self._waveform_cache.popitem(last=False)
+        except Exception as exc:
+            extraction_error = exc
+        finally:
+            # Jeder Leader-Pfad weckt sämtliche Warter, auch bei Abbruch.
+            if result is not None:
+                future.set_result(result)
+            else:
+                future.set_exception(
+                    extraction_error
+                    or WaveformError("Waveform-Extraktion wurde abgebrochen.")
+                )
+            with self._state_lock:
+                self._waveform_inflight.pop(key, None)
+        if extraction_error is not None:
+            return {"ok": False, "error": str(extraction_error)}
+        assert result is not None
+        duration, peaks = result
+        return {"ok": True, "duration": duration, "peaks": peaks}
+
+    ALLOWED_FORMATS = ("txt", "md", "csv", "tsv")
+
+    def save_output_options(self, options: Any) -> dict[str, Any]:
+        """Persistiert Format- und Options-Häkchen sofort bei Auswahl."""
+        if not isinstance(options, dict):
+            return {"ok": False, "error": "Ungültige Optionen."}
+        formats = options.get("formats")
+        cleaned = [
+            item for item in (formats if isinstance(formats, list) else [])
+            if item in self.ALLOWED_FORMATS
+        ]
+
+        def update() -> None:
+            self.config.set("last_formats", ",".join(cleaned))
+            for key in ("keep_wav", "verbose", "no_diarize", "auto_markers"):
+                self.config.set(f"last_{key}", bool(options.get(key)))
+
+        self.controller.update_config(self.config, update)
+        return {"ok": True}
 
     def set_theme(self, theme: Any) -> dict[str, Any]:
         """Persistiert die Hell/Dunkel-Wahl in der Konfiguration."""
@@ -554,7 +689,12 @@ class Bridge:
         with self._state_lock:
             current = self._paths.get(key)
             initial = current.parent if current and key != "output" else current
-            directory = str(initial or Path.home())
+        # Verschwundene Ordner (gelöscht, umbenannt, fremder tmp-Pfad) auf den
+        # nächsten existierenden Elternordner zurückfallen lassen statt auf Home.
+        while initial is not None and not initial.is_dir():
+            parent = initial.parent
+            initial = parent if parent != initial else None
+        directory = str(initial or Path.home())
         # WICHTIG: KEIN Datei-Filter für Ordner-Dialoge. Ein '*.*'-Filter auf
         # GTK SELECT_FOLDER lässt get_filenames() leer -> der geöffnete Ordner
         # ist nicht wählbar. Ordner-Aufrufer übergeben filters=() bewusst.
@@ -758,6 +898,15 @@ def _install_strict_csp_bridge() -> None:
     gtk.js_bridge_call = js_bridge_call
 
 
+def _saved_dimension(value: Any, default: int, minimum: int) -> int:
+    """Validiert eine gespeicherte Fensterabmessung aus der Config."""
+    try:
+        size = int(value)
+    except (TypeError, ValueError):
+        return default
+    return max(size, minimum)
+
+
 def main() -> None:
     """Startet das einzelne lokale pywebview-Fenster."""
     bridge = Bridge()
@@ -772,12 +921,13 @@ def main() -> None:
             # über allow_file_access_from_file_urls (pywebview-Default) erlaubt.
             url=Path(index_path).resolve().as_uri(),
             js_api=bridge,
-            width=1280,
-            height=900,
+            width=_saved_dimension(bridge.config.get("last_window_width"), 1280, 900),
+            height=_saved_dimension(bridge.config.get("last_window_height"), 900, 700),
             min_size=(900, 700),
         )
         bridge.attach_window(window)
         window.events.loaded += bridge.on_window_loaded
+        window.events.resized += bridge.on_window_resized
         window.events.closed += bridge.on_window_closed
         webview.start(_install_strict_csp_bridge, gui="gtk")
 

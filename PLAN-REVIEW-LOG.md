@@ -141,3 +141,14 @@ Minor-Widerspruch behoben: ffprobe jetzt durchgängig best-effort (kurzer Timeou
 
 ## Ergebnis
 VERDICT: APPROVED nach 5 Runden. Plan bereit für Act 3 (/codex-build) nach User-Freigabe.
+
+## Act 3 — Build
+
+### Round 1 — Codex build (thread 019f9325-7022-7fa1-9040-748a96d3c0c3, gpt-5.6-sol)
+Implementierte PLAN.md vollständig: Nav-Reihenfolge + SVG-Icons (index.html), Neon-Dark-Theme mit Gradient-Cards (style.css), waveform.py (ffmpeg-Streaming, Re-bin, Watchdog, idempotente Terminierung), get_waveform-Bridge (LRU-Cache, Koaleszenz, racefreie Registry) in app.py, Waveform-Canvas mit Guards/Media-Fehlerpfad/DPR/ResizeObserver/Tastatur+ARIA (app.js), pure Logik in wave_math.js, drei neue Testsuiten. Proof laut Codex: 97 pytest + 7 node Tests grün.
+
+### Claude's verdict (R1)
+Voller Diff gelesen, Proofs selbst ausgeführt (97 pytest, 7 node — grün). Ein Spec-Fidelity-Bug: Waveform-Labels stale nach „Anwenden" (renderSpeakers baut Inputs neu, ohne renderWaveformLabels).
+
+### Round 2 — Codex fix (gleiche Session)
+renderWaveformLabels()-Aufruf am Ende von renderSpeakers(). Verifiziert: Diff korrekt platziert, Proofs erneut grün. Statische Sichtprüfung im Browser: Nav-Reihenfolge, Neon-Theme, Gradient-Borders, Icons OK.
