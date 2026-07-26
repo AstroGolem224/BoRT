@@ -88,7 +88,13 @@
     max_speakers: $('max-speakers').value, formats: selectedFormats(),
     keep_wav: $('keep-wav').checked, verbose: $('verbose').checked,
     no_diarize: $('no-diarize').checked, auto_markers: $('auto-markers').checked,
+    colocate: $('colocate').checked,
   });
+  const toggleColocate = () => {
+    const active = $('colocate').checked;
+    $('output-path').disabled = active;
+    $('pick-output').disabled = active;
+  };
   const applyInitialState = (state) => {
     Object.entries(state.paths || {}).forEach(([key, value]) => setPath(key, value));
     const settings = state.settings || {};
@@ -96,7 +102,7 @@
       .forEach(([key, id]) => { if (settings[key]) $(id).value = settings[key]; });
     [['min_speakers', 'min-speakers'], ['max_speakers', 'max-speakers']]
       .forEach(([key, id]) => { if (settings[key]) $(id).value = settings[key]; });
-    [['keep_wav', 'keep-wav'], ['verbose', 'verbose'], ['no_diarize', 'no-diarize'], ['auto_markers', 'auto-markers']]
+    [['keep_wav', 'keep-wav'], ['verbose', 'verbose'], ['no_diarize', 'no-diarize'], ['auto_markers', 'auto-markers'], ['colocate', 'colocate']]
       .forEach(([key, id]) => { if (typeof settings[key] === 'boolean') $(id).checked = settings[key]; });
     if (Array.isArray(settings.formats)) {
       document.querySelectorAll('input[name="format"]').forEach((item) => {
@@ -104,6 +110,7 @@
       });
     }
     toggleBackend();
+    toggleColocate();
   };
   const renderPreview = (segments, outputLocation) => {
     const preview = $('preview');
@@ -209,7 +216,8 @@
   const currentTimelineDuration = () => {
     const audio = audioEl();
     if (mediaMetadataReady && Number.isFinite(audio.duration) && audio.duration > 0) return audio.duration;
-    if (mediaFailed && waveformResult && Number.isFinite(waveformResult.duration)) return waveformResult.duration;
+    if (waveformResult && Number.isFinite(waveformResult.duration)
+        && (mediaFailed || waveformResult.source === 'sidecar')) return waveformResult.duration;
     return 0;
   };
   const activeRequestIsCurrent = () => {
@@ -332,7 +340,7 @@
   };
   const tryRenderWaveform = () => {
     if (!waveformResult || !activeRequestIsCurrent()) return;
-    if (!mediaFailed && !mediaMetadataReady) return;
+    if (!mediaFailed && !mediaMetadataReady && waveformResult.source !== 'sidecar') return;
     const audio = audioEl();
     if (!mediaFailed && (!Number.isFinite(audio.duration) || audio.duration <= 0)) return;
     if (!mediaFailed && waveformResult.duration > 0) {
@@ -350,8 +358,10 @@
     api.get_waveform(captured.reviewId).then((result) => {
       if (!window.BortWave.isCurrentReview(captured.reviewId, reviewId, captured.src, audioEl().src)) return;
       if (!result || !result.ok) {
-        waveformResult = null;
-        $('player-bar').classList.remove('waveform-loading');
+        if (!waveformResult || waveformResult.source !== 'sidecar') {
+          waveformResult = null;
+          $('player-bar').classList.remove('waveform-loading');
+        }
         setViewStatus('speaker-status', result && result.error
           ? `Waveform nicht verfügbar: ${result.error}` : 'Waveform nicht verfügbar.');
         return;
@@ -359,17 +369,20 @@
       waveformResult = {
         duration: Number(result.duration) || 0,
         peaks: Array.isArray(result.peaks) ? result.peaks : [],
+        source: 'ffmpeg',
       };
       waveCache = null;
       tryRenderWaveform();
     }).catch((error) => {
       if (!window.BortWave.isCurrentReview(captured.reviewId, reviewId, captured.src, audioEl().src)) return;
-      waveformResult = null;
-      $('player-bar').classList.remove('waveform-loading');
+      if (!waveformResult || waveformResult.source !== 'sidecar') {
+        waveformResult = null;
+        $('player-bar').classList.remove('waveform-loading');
+      }
       setViewStatus('speaker-status', `Waveform nicht verfügbar: ${error}`);
     });
   };
-  const loadReviewAudio = (url, bookmarks) => {
+  const loadReviewAudio = (url, bookmarks, sidecarPeaks = [], sidecarDurationMs = 0) => {
     reviewBookmarks = bookmarks || [];
     const audio = audioEl();
     const card = $('player-card');
@@ -400,6 +413,17 @@
     $('player-duration').textContent = '00:00';
     $('player-markers').textContent = '';
     updateAria();
+    const sidecarDuration = Number(sidecarDurationMs) / 1000;
+    if (sidecarDuration > 0 && Array.isArray(sidecarPeaks) && sidecarPeaks.length) {
+      waveformResult = {
+        duration: sidecarDuration,
+        peaks: sidecarPeaks.map((peak) => [-Number(peak) || 0, Number(peak) || 0]),
+        source: 'sidecar',
+      };
+      waveformRequest = { reviewId, src: audio.src };
+      waveCache = null;
+      tryRenderWaveform();
+    }
   };
   const renderPlayerMarkers = () => {
     const target = $('player-markers');
@@ -498,6 +522,113 @@
     $('pending-count').textContent = `${items.length} ${items.length === 1 ? 'Datei' : 'Dateien'}`;
     $('start-batch').disabled = items.length === 0 || Boolean(activeBatchId);
   };
+  const activateView = (viewId) => {
+    document.querySelectorAll('.nav-item').forEach(
+      (item) => item.classList.toggle('active', item.dataset.view === viewId),
+    );
+    document.querySelectorAll('.view').forEach(
+      (view) => view.classList.toggle('active', view.id === viewId),
+    );
+  };
+  const renderMiniWave = (canvas, peaks) => {
+    const values = window.BortWave.resamplePeaks(peaks, 34);
+    const width = canvas.clientWidth || 260;
+    const height = canvas.clientHeight || 58;
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    canvas.width = Math.round(width * dpr);
+    canvas.height = Math.round(height * dpr);
+    const context = canvas.getContext('2d');
+    context.scale(dpr, dpr);
+    const gradient = context.createLinearGradient(0, 0, width, 0);
+    [[0, '#00D8E8'], [0.26, '#22D3EE'], [0.48, '#C9D4FF'], [0.70, '#A855F7'], [1, '#8B5CF6']]
+      .forEach(([position, color]) => gradient.addColorStop(position, color));
+    context.strokeStyle = gradient;
+    context.lineCap = 'round';
+    context.lineWidth = Math.max(2, width / 68);
+    const bars = values.length ? values : Array(34).fill(0.03);
+    bars.forEach((peak, index) => {
+      const amplitude = Math.max(0.03, Math.min(1, Number(peak) || 0)) * height * 0.42;
+      const x = (index + 0.5) / bars.length * width;
+      context.beginPath();
+      context.moveTo(x, height / 2 - amplitude);
+      context.lineTo(x, height / 2 + amplitude);
+      context.stroke();
+    });
+  };
+  const renderLibraryItems = (items) => {
+    const target = $('library-items');
+    target.textContent = '';
+    if (!items.length) {
+      const empty = document.createElement('p');
+      empty.className = 'empty-state';
+      empty.textContent = 'Keine Aufnahmen gefunden.';
+      target.append(empty);
+      return;
+    }
+    items.forEach((item) => {
+      const card = document.createElement('article');
+      card.className = 'card library-card';
+      const canvas = document.createElement('canvas');
+      canvas.className = 'library-wave';
+      const body = document.createElement('div');
+      body.className = 'library-body';
+      const title = document.createElement('strong');
+      title.textContent = item.name;
+      const detail = document.createElement('span');
+      const date = item.started_at ? new Date(item.started_at).toLocaleString('de-DE') : 'Datum unbekannt';
+      detail.textContent = `${date} · ${formatTime((Number(item.duration_ms) || 0) / 1000)} · ${item.folder}`;
+      const badges = document.createElement('div');
+      badges.className = 'library-badges';
+      (item.formats_present || []).forEach((format) => {
+        const badge = document.createElement('span');
+        badge.textContent = format.toUpperCase();
+        badges.append(badge);
+      });
+      const reviewBadge = document.createElement('span');
+      reviewBadge.textContent = item.has_review ? 'Review ✓' : 'Kein Review';
+      badges.append(reviewBadge);
+      const markerBadge = document.createElement('span');
+      markerBadge.textContent = `⚑ ${item.marker_count || 0} Marker`;
+      badges.append(markerBadge);
+      body.append(title, detail, badges);
+      const actions = document.createElement('div');
+      actions.className = 'library-actions';
+      if (item.has_review) {
+        const review = document.createElement('button');
+        review.type = 'button';
+        review.textContent = 'Review öffnen';
+        review.addEventListener('click', async () => {
+          const result = await api.open_library_review(item.item_id);
+          if (!result.ok) {
+            setViewStatus('library-status', result.error || 'Review konnte nicht geladen werden.', true);
+            return;
+          }
+          acceptReviewResult(result);
+          activateView('speakers');
+        });
+        actions.append(review);
+      }
+      const transcribe = document.createElement('button');
+      transcribe.type = 'button';
+      transcribe.className = 'primary';
+      transcribe.textContent = 'Transkribieren';
+      transcribe.addEventListener('click', async () => {
+        const result = await api.prepare_library_transcription(item.item_id);
+        if (!result.ok) {
+          setViewStatus('library-status', result.error || 'Aufnahme nicht mehr verfügbar.', true);
+          return;
+        }
+        setPath('audio', result.audio_path);
+        setPath('marker', result.marker_path);
+        activateView('transcribe');
+        setStatus('Aufnahme aus der Bibliothek vorbereitet.');
+      });
+      actions.append(transcribe);
+      card.append(canvas, body, actions);
+      target.append(card);
+      requestAnimationFrame(() => renderMiniWave(canvas, item.peaks34 || []));
+    });
+  };
   const setBatchOutcome = (audioName, text, error = false) => {
     document.querySelectorAll('.batch-outcome').forEach((node) => {
       if (node.dataset.audioName === audioName) {
@@ -583,18 +714,19 @@
     const s = formSettings();
     api.save_output_options({
       formats: s.formats, keep_wav: s.keep_wav, verbose: s.verbose,
-      no_diarize: s.no_diarize, auto_markers: s.auto_markers,
+      no_diarize: s.no_diarize, auto_markers: s.auto_markers, colocate: s.colocate,
     }).catch(() => {});
   };
-  document.querySelectorAll('input[name="format"], #keep-wav, #verbose, #no-diarize, #auto-markers')
+  document.querySelectorAll('input[name="format"], #keep-wav, #verbose, #no-diarize, #auto-markers, #colocate')
     .forEach((input) => input.addEventListener('change', persistOutputOptions));
+  $('colocate').addEventListener('change', toggleColocate);
   [['audio', 'pick-audio'], ['marker', 'pick-marker'], ['output', 'pick-output'], ['model', 'pick-model']]
     .forEach(([kind, id]) => $(id).addEventListener('click', async () => {
       const result = await api[`pick_${kind}`]();
       if (result && result.ok) setPath(kind, result.path);
     }));
   $('open-output').addEventListener('click', async () => {
-    const result = await api.open_output_dir();
+    const result = await api.open_output_dir($('colocate').checked);
     if (result && !result.ok) setStatus(result.error || 'Ordner konnte nicht geöffnet werden.', true);
   });
   $('start').addEventListener('click', async () => {
@@ -611,6 +743,20 @@
     }
     $('start').disabled = true;
   });
+  const acceptReviewResult = (result) => {
+    reviewId = result.review_id;
+    reviewSegments = result.segments || [];
+    reviewBaseName = result.base_name || '';
+    $('review-name').value = reviewBaseName;
+    $('review-name').readOnly = result.rename_allowed === false;
+    $('review-rename-hint').hidden = result.rename_allowed !== false;
+    loadReviewAudio(
+      result.audio_url, result.bookmarks, result.sidecar_peaks, result.sidecar_duration_ms,
+    );
+    renderSpeakers(result.speakers || []);
+    setViewStatus('speaker-status', `${(result.speakers || []).length} Sprecher geladen.`);
+    requestReviewWaveform();
+  };
   $('pick-review').addEventListener('click', async () => {
     const result = await api.pick_review_file();
     if (!result || result.cancelled) return;
@@ -618,14 +764,7 @@
       setViewStatus('speaker-status', result.error || 'Review konnte nicht geladen werden.', true);
       return;
     }
-    reviewId = result.review_id;
-    reviewSegments = result.segments || [];
-    reviewBaseName = result.base_name || '';
-    $('review-name').value = reviewBaseName;
-    loadReviewAudio(result.audio_url, result.bookmarks);
-    renderSpeakers(result.speakers || []);
-    setViewStatus('speaker-status', `${(result.speakers || []).length} Sprecher geladen.`);
-    requestReviewWaveform();
+    acceptReviewResult(result);
   });
   const renameReview = async () => {
     const input = $('review-name');
@@ -753,7 +892,7 @@
   });
   $('scan-batch').addEventListener('click', async () => {
     setViewStatus('batch-status', 'Ordner wird gescannt …');
-    const result = await api.scan_batch();
+    const result = await api.scan_batch(formSettings());
     if (!result.ok) {
       setViewStatus('batch-status', result.error || 'Scan fehlgeschlagen.', true);
       return;
@@ -762,6 +901,21 @@
     renderBatchItems(pendingBatchItems);
     $('unstable-count').textContent = `${result.skipped_unstable || 0} noch instabile Dateien übersprungen.`;
     setViewStatus('batch-status', `${pendingBatchItems.length} ausstehende Dateien gefunden.`);
+  });
+  $('pick-library').addEventListener('click', async () => {
+    const result = await api.pick_library_dir();
+    if (result && result.ok) $('library-path').value = result.path || '';
+  });
+  $('scan-library').addEventListener('click', async () => {
+    setViewStatus('library-status', 'Bibliothek wird gescannt …');
+    const result = await api.scan_library();
+    if (!result.ok) {
+      setViewStatus('library-status', result.error || 'Scan fehlgeschlagen.', true);
+      return;
+    }
+    renderLibraryItems(result.items || []);
+    $('library-summary').textContent = `${result.scanned} Einträge untersucht · ${result.warning_count} Warnungen${result.truncated ? ' · Ergebnis begrenzt' : ''}`;
+    setViewStatus('library-status', `${(result.items || []).length} Aufnahmen gefunden.`);
   });
   $('start-batch').addEventListener('click', async () => {
     $('batch-log').textContent = '';

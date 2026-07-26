@@ -106,6 +106,20 @@
   const isCurrentReview = (capturedId, currentId, capturedSrc, currentSrc) =>
     Boolean(capturedId && capturedId === currentId && capturedSrc === currentSrc);
 
+  const resamplePeaks = (peaks, count) => {
+    if (!Array.isArray(peaks) || peaks.length === 0 || !(count > 0)) return [];
+    if (peaks.length === count) return peaks.slice();
+    if (peaks.length > count) {
+      return Array.from({ length: count }, (_, index) => {
+        const start = Math.floor(index * peaks.length / count);
+        const end = Math.floor((index + 1) * peaks.length / count);
+        return Math.max(...peaks.slice(start, end).map(Number));
+      });
+    }
+    return Array.from({ length: count }, (_, index) =>
+      Number(peaks[Math.min(peaks.length - 1, Math.floor(index * peaks.length / count))]));
+  };
+
   const api = {
     normalizeSegments,
     bucketSpeaker,
@@ -114,6 +128,7 @@
     keyboardSeekTarget,
     ariaValues,
     isCurrentReview,
+    resamplePeaks,
   };
   if (typeof window !== 'undefined') window.BortWave = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

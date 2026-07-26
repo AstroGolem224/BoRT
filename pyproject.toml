@@ -40,7 +40,7 @@ dev = [
 
 [project.scripts]
 bort = "bort.cli:main"
-bort-gui = "bort.gui:main"
+bort-gui = "bort.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

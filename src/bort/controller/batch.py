@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
-from ..batch import PendingItem, is_file_stable, scan_pending
+from ..batch import PendingItem, _has_output, is_file_stable, scan_pending
 from ..markers import MarkerError, load_markers
 from .jobs import EventEmitter, JobController, TranscriptionParams, transcription_worker
 
@@ -31,8 +31,10 @@ class BatchController:
         self._active_id: str | None = None
         self._cancel_requested = False
 
-    def scan(self, watch_dir: Path, output_dir: Path) -> tuple[list[PendingItem], int]:
-        candidates = scan_pending(watch_dir, output_dir)
+    def scan(
+        self, watch_dir: Path, output_dir: Path, settings: dict | None = None
+    ) -> tuple[list[PendingItem], int]:
+        candidates = scan_pending(watch_dir, output_dir, settings)
         stable = [item for item in candidates if is_file_stable(item.audio_path)]
         return stable, len(candidates) - len(stable)
 
@@ -99,6 +101,24 @@ class BatchController:
                 ("batch_item_error", batch_id, item.audio_path.name, "Ungültige Einstellungen")
             )
             return "error"
+        if _has_output(
+            item.audio_path,
+            params.output_dir,
+            {
+                "formats": params.formats,
+                "backend": params.backend,
+                "colocate": params.colocate,
+                "no_diarize": params.no_diarize,
+                "auto_markers": params.auto_markers,
+            },
+        ):
+            self._emit((
+                "batch_item_skip",
+                batch_id,
+                item.audio_path.name,
+                "Übersprungen: bereits vollständig",
+            ))
+            return "skip"
         if not item.audio_path.exists() or not is_file_stable(item.audio_path):
             self._emit(
                 (

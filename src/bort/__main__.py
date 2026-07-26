@@ -8,7 +8,6 @@ from __future__ import annotations
 import os
 import sys
 
-
 # -----------------------------------------------------------------------------
 # Verwende das systemweite Tcl/Tk 8.6, damit CustomTkinter nicht gegen eine
 # inkompatible/interne Tk-9.x-Library gelinkt (was unter XWayland zu XCB-
@@ -36,7 +35,7 @@ def main() -> int:
         return cli_main()
 
     # Default: GUI starten
-    from bort.gui import main as gui_main
+    from bort.app import main as gui_main
     return gui_main()
 
 

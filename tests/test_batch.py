@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 
 from bort.batch import PendingItem, is_file_stable, scan_pending
+from bort.controller.jobs import expected_artifacts
 
 
 def test_scan_pending_finds_new_pair(tmp_path: Path) -> None:
@@ -72,6 +73,52 @@ def test_scan_pending_ignores_non_audio_files(tmp_path: Path) -> None:
 
 def test_scan_pending_missing_watch_dir_returns_empty(tmp_path: Path) -> None:
     assert scan_pending(tmp_path / "does-not-exist", tmp_path / "output") == []
+
+
+def test_expected_artifacts_matches_whisperx_worker() -> None:
+    base = {
+        "formats": ["txt", "md"],
+        "backend": "whisperx",
+        "auto_markers": True,
+        "no_diarize": False,
+    }
+    assert expected_artifacts(base) == (
+        ".txt", ".md", ".review.json", ".markers.json"
+    )
+    assert expected_artifacts({**base, "no_diarize": True}) == (
+        ".txt", ".md", ".review.json"
+    )
+
+
+def test_scan_pending_colocate_requires_complete_current_family(tmp_path: Path) -> None:
+    day = tmp_path / "2026-07-24"
+    day.mkdir()
+    audio = day / "aufnahme.m4a"
+    audio.write_bytes(b"audio")
+    settings = {
+        "formats": ["txt"],
+        "backend": "whisperx",
+        "colocate": True,
+        "auto_markers": True,
+        "no_diarize": False,
+    }
+    (day / "aufnahme.txt").write_text("text")
+    (day / "aufnahme.review.json").write_text("{}")
+    assert scan_pending(tmp_path, tmp_path / "unused", settings) == [
+        PendingItem(audio, None)
+    ]
+    (day / "aufnahme.markers.json").write_text("{}")
+    assert scan_pending(tmp_path, tmp_path / "unused", settings) == []
+
+
+def test_scan_pending_skips_symlink_directories(tmp_path: Path) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "aufnahme.m4a").write_bytes(b"audio")
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "link").symlink_to(outside, target_is_directory=True)
+    assert scan_pending(root, tmp_path / "output") == []
 
 
 def test_is_file_stable_true_when_unchanged_across_samples(tmp_path: Path) -> None:

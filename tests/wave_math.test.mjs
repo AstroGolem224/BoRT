@@ -79,3 +79,19 @@ test('isCurrentReview schützt gegen alte Review- und src-Antworten', () => {
   assert.equal(wave.isCurrentReview('r1', 'r2', 'file:///a', 'file:///a'), false);
   assert.equal(wave.isCurrentReview('r1', 'r1', 'file:///a', 'file:///b'), false);
 });
+
+test('resamplePeaks spiegelt Down- und Upsampling-Vertrag', () => {
+  assert.deepEqual(wave.resamplePeaks([], 34), []);
+  assert.deepEqual(wave.resamplePeaks([0, 1, 2], 3), [0, 1, 2]);
+  const up = wave.resamplePeaks([0, 1, 2, 3, 4], 34);
+  assert.equal(up.length, 34);
+  assert.deepEqual(up, Array.from({ length: 34 }, (_, index) =>
+    [0, 1, 2, 3, 4][Math.min(4, Math.floor(index * 5 / 34))]));
+  const source = Array.from({ length: 104 }, (_, index) => index);
+  const down = wave.resamplePeaks(source, 34);
+  assert.deepEqual(down, Array.from({ length: 34 }, (_, index) => {
+    const start = Math.floor(index * 104 / 34);
+    const end = Math.floor((index + 1) * 104 / 34);
+    return Math.max(...source.slice(start, end));
+  }));
+});

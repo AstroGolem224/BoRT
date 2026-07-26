@@ -238,3 +238,14 @@ The recovery truth table matches the requested five cases exactly, resolves the 
 VERDICT: APPROVED
 ## Ergebnis
 VERDICT: APPROVED nach 7 Runden (5 regulär + 2 Bestätigung). 62 Findings, alle adressiert. Bereit für Act 3 (/codex-build) nach User-Freigabe.
+
+## Act 3 — Build
+
+### Round 1 — Codex build (14 min, 208k Tokens)
+Vollumsetzung PLAN.md: Entry-Points auf bort.app, Manifest-Transaktion mit Recovery-Wahrheitstabelle (writers.py), expected_artifacts + Fingerprint + Item-Recheck (jobs/batch/app), sidecar.py-Reader + resample_peaks, resumierbare Migration (migrate_colocate.py), Bibliotheks-View (4. Nav, Peaks-Cards, Generation-Guards), Sofort-Sidecar-Waveform. 6 neue Testdateien. Proofs laut Codex grün.
+
+### Claude's verdict (R1)
+Proofs selbst ausgeführt (118 pytest nach Fix, 8 node, ruff auf angefassten Dateien sauber). writers/sidecar/migration/batch/app.py-Diff selbst gelesen — spec-treu inkl. Wahrheitstabelle und Review-zuletzt-Löschung; Frontend-Diff durch Review-Subagent (keine Befunde). Entry-Point-Smoke-Test: python -m bort startet pywebview-App. EIN Fund: recover_transactions legte .bort-lock in jedem gescannten Ordner an (Sync-Müll).
+
+### Round 2 — Codex fix (gleiche Session)
+Billiger Read-only-Vorab-Check in recover_transactions (kein Lock/keine Datei ohne Transaktionsartefakte) + Regressionstest. Verifiziert: Lockfile entsteht nicht mehr auf sauberen Ordnern, 118 Tests grün.

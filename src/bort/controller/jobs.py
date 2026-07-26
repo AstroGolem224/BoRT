@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -13,7 +14,7 @@ from ..audio import AudioError, convert_to_wav, is_supported_audio
 from ..markers import Bookmark, MarkerError, load_bookmarks, load_markers
 from ..speakers import MarkerSpeakerResolver, PlaceholderSpeakerResolver, SpeakerMarker
 from ..transcription import TranscriptionError, transcribe
-from ..whisperx_backend import WhisperXError, save_markers
+from ..whisperx_backend import WhisperXError
 from ..whisperx_backend import transcribe as transcribe_whisperx
 from ..writers import write_outputs
 
@@ -39,6 +40,7 @@ class TranscriptionSettings:
     verbose: bool = False
     no_diarize: bool = False
     auto_markers: bool = True
+    colocate: bool = True
 
 
 @dataclass(frozen=True)
@@ -60,6 +62,7 @@ class TranscriptionParams:
     max_speakers: int | None = None
     no_diarize: bool = False
     auto_markers: bool = True
+    colocate: bool = True
 
 
 @dataclass(frozen=True)
@@ -101,6 +104,12 @@ def build_params(settings: TranscriptionSettings) -> ParamsResult:
         errors.append("Modell-Datei nicht gefunden.")
     if not settings.formats:
         errors.append("Mindestens ein Ausgabeformat auswählen.")
+    effective_output = settings.audio_path.parent if settings.colocate else settings.output_dir
+    if settings.colocate:
+        if not effective_output.is_dir() or not os.access(effective_output, os.W_OK):
+            errors.append("Der Ordner der Audio-Datei ist nicht beschreibbar.")
+    elif not settings.output_dir.is_dir():
+        errors.append("Ausgabeordner nicht gefunden.")
 
     def parse_speakers(value: str, label: str) -> int | None:
         if not value.strip():
@@ -132,8 +141,26 @@ def build_params(settings: TranscriptionSettings) -> ParamsResult:
             verbose=settings.verbose,
             no_diarize=settings.no_diarize,
             auto_markers=settings.auto_markers,
+            colocate=settings.colocate,
         )
     )
+
+
+def expected_artifacts(
+    settings: TranscriptionParams | TranscriptionSettings | dict[str, Any],
+) -> tuple[str, ...]:
+    """Definiert den vom Worker tatsächlich erzeugten vollständigen Artefaktsatz."""
+    if isinstance(settings, dict):
+        get = settings.get
+    else:
+        def get(key: str, default: Any = None) -> Any:
+            return getattr(settings, key, default)
+    suffixes = [f".{fmt}" for fmt in get("formats", [])]
+    if get("backend") == "whisperx":
+        suffixes.append(".review.json")
+        if get("auto_markers", True) and not get("no_diarize", False):
+            suffixes.append(".markers.json")
+    return tuple(suffixes)
 
 
 class JobController:
@@ -205,6 +232,7 @@ def transcription_worker(params: TranscriptionParams, emit: EventEmitter) -> Non
 
     handler, previous_level = _setup_worker_logging(emit, params.verbose)
     try:
+        effective_output = params.audio_path.parent if params.colocate else params.output_dir
         if params.backend == "whisperx":
             logger.info(
                 "Starte Transkription mit whisperX (Modell=%s, Sprache=%s)",
@@ -221,10 +249,15 @@ def transcription_worker(params: TranscriptionParams, emit: EventEmitter) -> Non
                 no_diarize=params.no_diarize,
                 progress_cb=progress,
             )
+            marker_data = None
             if params.auto_markers and not params.no_diarize:
-                marker_path = params.output_dir / f"{params.audio_path.stem}.markers.json"
-                save_markers(result, marker_path)
-                logger.info("Auto-Marker gespeichert: %s", marker_path)
+                marker_data = {
+                    "speakers": dict(result.speaker_map),
+                    "markers": [
+                        {"start": marker.start, "end": marker.end, "speaker": marker.speaker}
+                        for marker in result.markers
+                    ],
+                }
             logger.info(
                 "Transkription abgeschlossen (%d Segmente, %d Sprecher).",
                 len(result.segments),
@@ -241,7 +274,7 @@ def transcription_worker(params: TranscriptionParams, emit: EventEmitter) -> Non
             logger.info("Konvertiere Audio: %s", params.audio_path)
             progress(0.0, "Konvertiere Audio")
             wav_path = convert_to_wav(
-                params.audio_path, params.output_dir if params.keep_wav else None
+                params.audio_path, effective_output if params.keep_wav else None
             )
             logger.info("WAV erzeugt: %s", wav_path)
             logger.info(
@@ -271,13 +304,15 @@ def transcription_worker(params: TranscriptionParams, emit: EventEmitter) -> Non
         review_data = _review_data(params, speaker_segments, wx_speaker_map, wx_markers, bookmarks)
         output_paths = write_outputs(
             speaker_segments,
-            params.output_dir,
+            effective_output,
             params.audio_path.stem,
             params.formats,
             bookmarks or None,
             review_data,
+            overwrite=params.colocate,
+            marker_data=marker_data if params.backend == "whisperx" else None,
         )
-        output_location = output_paths[0].parent if output_paths else params.output_dir
+        output_location = output_paths[0].parent if output_paths else effective_output
         logger.info("Ausgabe gespeichert in %s:", output_location)
         for path in output_paths:
             logger.info("  - %s", path)

@@ -15,6 +15,7 @@
       <nav>
         <button class="nav-item active" data-view="transcribe"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-4-8v4m8-4v4M6 14a6 6 0 0 0 12 0M12 20v2m-4 0h8"/></svg><span>Transkribieren</span></button>
         <button class="nav-item" data-view="batch"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v5H4zM4 14h16v5H4zM7 7.5h.01M7 16.5h.01"/></svg><span>Batch</span></button>
+        <button class="nav-item" data-view="library"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2 2h9v11H3zM7 13h10M7 17h7"/></svg><span>Bibliothek</span></button>
         <button class="nav-item" data-view="speakers"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 20v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 10a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm7-1a3 3 0 0 0 0-6m2 11a4 4 0 0 1 4 4v2"/></svg><span>Sprecher</span></button>
       </nav>
       <p class="sidebar-foot"><span class="status-dot"></span>Lokale Transkription</p>
@@ -29,6 +30,7 @@
             <label>Audio-Datei <span class="required">*</span><span class="picker"><input id="audio-path" readonly><button id="pick-audio" type="button">Auswählen</button></span></label>
             <label>Marker-Datei <span class="muted">optional</span><span class="picker"><input id="marker-path" readonly><button id="pick-marker" type="button">Auswählen</button></span></label>
             <label>Ausgabeordner <span class="required">*</span><span class="picker"><input id="output-path" readonly><button id="pick-output" type="button">Auswählen</button><button id="open-output" type="button" title="Im Dateimanager öffnen">📂 Öffnen</button></span></label>
+            <label class="check"><input id="colocate" type="checkbox" checked> Neben der Audio-Datei speichern</label>
           </div>
           <div class="card">
             <h2><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-4-8v4m8-4v4M6 14a6 6 0 0 0 12 0"/></svg>Transkription</h2>
@@ -52,6 +54,7 @@
         <div class="card">
           <h2><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4zM8 9h8M8 13h6"/></svg>Review</h2>
           <div class="picker"><input id="review-name" placeholder="Keine Review-Datei geladen"><button id="pick-review" type="button">Review-Datei auswählen</button></div>
+          <p id="review-rename-hint" class="muted" hidden>BoR-Aufnahmen behalten ihren Dateinamen, damit Audio und Sidecar gepaart bleiben.</p>
         </div>
         <div id="player-card" class="card" hidden>
           <div class="player">
@@ -79,6 +82,16 @@
             <div id="speaker-transcript" class="speaker-transcript"></div>
           </div>
         </div>
+      </section>
+      <section id="library" class="view" aria-labelledby="library-title">
+        <header><h1 id="library-title">Bibliothek</h1><p>Aufnahmen, Transkripte und Reviews an einem Ort.</p></header>
+        <p id="library-status" class="status" role="status">Bibliotheksordner auswählen und scannen.</p>
+        <div class="card">
+          <h2><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2 2h9v11H3z"/></svg>Ordner</h2>
+          <div class="picker"><input id="library-path" readonly><button id="pick-library" type="button">Wählen</button><button id="scan-library" type="button">Scannen</button></div>
+          <p id="library-summary" class="muted"></p>
+        </div>
+        <div id="library-items" class="library-items"><p class="empty-state">Noch nicht gescannt.</p></div>
       </section>
       <section id="batch" class="view" aria-labelledby="batch-title">
         <header><h1 id="batch-title">Batch</h1><p>Neue Aufnahmen aus einem Sync-Ordner nacheinander verarbeiten.</p></header>

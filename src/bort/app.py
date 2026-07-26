@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import heapq
 import json
 import subprocess
 import sys
@@ -16,6 +17,7 @@ from typing import Any
 import gi
 import webview
 
+from .audio import is_supported_audio
 from .config import Config
 from .controller.batch import BatchController
 from .controller.jobs import (
@@ -30,9 +32,11 @@ from .controller.speaker_edit import (
     SpeakerEditController,
     SpeakerEditError,
 )
+from .sidecar import read_recording_meta, resample_peaks
 from .speaker_review import ReviewError, load_review
 from .speakers import SpeakerSegment
 from .waveform import WaveformError, extract_peaks, terminate_process
+from .writers import FORMATS, recover_transactions
 
 
 def _load_glib() -> Any:
@@ -90,6 +94,9 @@ class Bridge:
         self._active_job_id: str | None = None
         self._active_batch_id: str | None = None
         self._pending_batch: list[Any] = []
+        self._pending_batch_fingerprint: tuple[Any, ...] | None = None
+        self._library_generation = 0
+        self._library_items: dict[str, tuple[int, Path]] = {}
         self._player: AudioPlayer | None = None
         self._window_size: tuple[int, int] | None = None
         self._waveform_processes: dict[
@@ -108,6 +115,8 @@ class Bridge:
             "model": self.config.get_path("last_model_path"),
             "watch": self.config.get_path("last_watch_dir"),
             "review": self.config.get_path("last_review_path"),
+            "library": self.config.get_path("last_library_dir")
+            or self.config.get_path("last_watch_dir"),
         }
 
     def __dir__(self) -> list[str]:
@@ -177,6 +186,7 @@ class Bridge:
                     "verbose": self.config.get("last_verbose", False),
                     "no_diarize": self.config.get("last_no_diarize", False),
                     "auto_markers": self.config.get("last_auto_markers", True),
+                    "colocate": self.config.get("last_colocate", True),
                 },
             }
 
@@ -203,7 +213,10 @@ class Bridge:
         )
         if not chosen:
             return {"ok": False, "cancelled": True}
-        path = Path(chosen).expanduser()
+        return self._register_review_from_path(Path(chosen).expanduser())
+
+    def _register_review_from_path(self, path: Path) -> dict[str, Any]:
+        """Registriert eine Review aus Dialog oder Bibliothek im identischen Format."""
         try:
             review = load_review(path)
         except ReviewError as exc:
@@ -250,6 +263,10 @@ class Bridge:
             }
             for bookmark in stored.bookmarks
         ]
+        meta = read_recording_meta(
+            review.audio_path.with_name(f"{review.audio_path.stem}.json"),
+            review.audio_path.name,
+        )
         return {
             "ok": True,
             "review_id": review_id,
@@ -262,6 +279,11 @@ class Bridge:
             ],
             "segments": segments,
             "bookmarks": bookmarks,
+            "sidecar_peaks": meta.peaks if meta else [],
+            "sidecar_duration_ms": meta.duration_ms if meta else 0,
+            "rename_allowed": not review.audio_path.with_name(
+                f"{review.audio_path.stem}.json"
+            ).exists(),
         }
 
     def _register_waveform_process(
@@ -363,6 +385,8 @@ class Bridge:
             self.config.set("last_formats", ",".join(cleaned))
             for key in ("keep_wav", "verbose", "no_diarize", "auto_markers"):
                 self.config.set(f"last_{key}", bool(options.get(key)))
+            if "colocate" in options:
+                self.config.set("last_colocate", bool(options.get("colocate")))
 
         self.controller.update_config(self.config, update)
         return {"ok": True}
@@ -375,10 +399,14 @@ class Bridge:
         )
         return {"ok": True, "theme": value}
 
-    def open_output_dir(self) -> dict[str, Any]:
+    def open_output_dir(self, colocate: Any = False) -> dict[str, Any]:
         """Öffnet den aktuellen Ausgabeordner im System-Dateimanager."""
         with self._state_lock:
-            output = self._paths["output"]
+            output = (
+                self._paths["audio"].parent
+                if colocate is True and self._paths["audio"] is not None
+                else self._paths["output"]
+            )
         if output is None or not output.is_dir():
             return {"ok": False, "error": "Kein gültiger Ausgabeordner ausgewählt."}
         try:
@@ -418,6 +446,12 @@ class Bridge:
             return {"ok": False, "error": "Ungültige Eingabe."}
         try:
             with self._state_lock:
+                current = self.speaker_controller.get(review_id)
+                if current.audio_path.with_name(f"{current.audio_path.stem}.json").exists():
+                    raise SpeakerEditError(
+                        "BoR-Aufnahmen können nicht umbenannt werden, weil ihre Sidecar-Paarung "
+                        "erhalten bleiben muss."
+                    )
                 review = self.speaker_controller.rename_base(review_id, new_base)
                 new_path = review.review_path
                 if new_path is not None:
@@ -464,20 +498,197 @@ class Bridge:
             )
         return result
 
-    def scan_batch(self) -> dict[str, Any]:
+    def pick_library_dir(self) -> dict[str, Any]:
+        chosen = self._dialog(
+            webview.FOLDER_DIALOG, "Bibliotheksordner auswählen", (), "library"
+        )
+        result = self._record_path("library", chosen, must_be_directory=True)
+        if result.get("ok"):
+            path = Path(result["path"])
+            with self._state_lock:
+                self._library_generation += 1
+                self._library_items = {}
+            self.controller.update_config(
+                self.config,
+                lambda: self._save_config_path("last_library_dir", path),
+            )
+        return result
+
+    @staticmethod
+    def _library_epoch(started_at: Any, fallback: float) -> float:
+        if started_at is None:
+            return fallback
+        try:
+            if started_at.tzinfo is None:
+                return started_at.timestamp()
+            return started_at.timestamp()
+        except (OSError, OverflowError, ValueError):
+            return fallback
+
+    def scan_library(self) -> dict[str, Any]:
+        with self._state_lock:
+            root = self._paths["library"]
+        if root is None or not root.is_dir():
+            return {"ok": False, "error": "Bitte einen Bibliotheksordner auswählen."}
+        scanned = 0
+        truncated = False
+        warning_count = 0
+        candidates: list[tuple[tuple[float, str], dict[str, Any], Path]] = []
+        directories: list[tuple[Path, list[Path] | None]] = []
+        try:
+            root_entries: list[Path] = []
+            for entry in root.iterdir():
+                scanned += 1
+                if scanned > 5000:
+                    truncated = True
+                    break
+                root_entries.append(entry)
+                if entry.is_dir() and not entry.is_symlink():
+                    directories.append((entry, None))
+        except OSError as exc:
+            return {"ok": False, "error": str(exc)}
+        directories.insert(0, (root, root_entries))
+        for directory, known_entries in directories:
+            recover_transactions(directory)
+            try:
+                entries = known_entries if known_entries is not None else directory.iterdir()
+            except OSError:
+                warning_count += 1
+                continue
+            for audio in entries:
+                if known_entries is None:
+                    scanned += 1
+                    if scanned > 5000:
+                        truncated = True
+                        break
+                if not audio.is_file() or not is_supported_audio(audio):
+                    continue
+                sidecar = audio.with_name(f"{audio.stem}.json")
+                meta = read_recording_meta(sidecar, audio.name)
+                if meta:
+                    warning_count += len(meta.warnings)
+                elif sidecar.exists():
+                    warning_count += 1
+                formats = [
+                    fmt for fmt, (suffix, _writer) in FORMATS.items()
+                    if audio.with_name(audio.stem + suffix).is_file()
+                ]
+                stat = audio.stat()
+                epoch = self._library_epoch(meta.started_at if meta else None, stat.st_mtime)
+                item = {
+                    "name": audio.name,
+                    "folder": str(audio.parent),
+                    "duration_ms": meta.duration_ms if meta else 0,
+                    "started_at": meta.started_at.isoformat() if meta and meta.started_at else None,
+                    "marker_count": meta.marker_count if meta else 0,
+                    "peaks34": resample_peaks(meta.peaks, 34) if meta else [],
+                    "formats_present": formats,
+                    "has_review": audio.with_name(f"{audio.stem}.review.json").is_file(),
+                }
+                candidates.append(((epoch, audio.name), item, audio.resolve()))
+            if truncated:
+                break
+        newest = heapq.nlargest(500, candidates, key=lambda row: row[0])
+        if len(candidates) > 500:
+            truncated = True
+        generation = uuid.uuid4().hex
+        mapping: dict[str, tuple[int, Path]] = {}
+        response_items = []
+        for index, (_key, item, audio) in enumerate(newest):
+            item_id = uuid.uuid4().hex
+            item["item_id"] = item_id
+            response_items.append(item)
+            mapping[item_id] = (self._library_generation + 1, audio)
+        with self._state_lock:
+            self._library_generation += 1
+            numeric_generation = self._library_generation
+            mapping = {key: (numeric_generation, value[1]) for key, value in mapping.items()}
+            self._library_items = mapping
+        return {
+            "ok": True,
+            "generation": generation,
+            "items": response_items,
+            "scanned": min(scanned, 5000),
+            "truncated": truncated,
+            "warning_count": warning_count,
+        }
+
+    def _library_audio(self, item_id: Any) -> Path:
+        if not isinstance(item_id, str):
+            raise ValueError("Bitte neu scannen.")
+        with self._state_lock:
+            root = self._paths["library"]
+            registered = self._library_items.get(item_id)
+            generation = self._library_generation
+        if root is None or registered is None or registered[0] != generation:
+            raise ValueError("Bitte neu scannen.")
+        audio = registered[1]
+        try:
+            audio.relative_to(root.resolve())
+        except ValueError as exc:
+            raise ValueError("Bitte neu scannen.") from exc
+        if not audio.is_file() or not is_supported_audio(audio):
+            raise ValueError("Bitte neu scannen.")
+        return audio
+
+    def open_library_review(self, item_id: Any) -> dict[str, Any]:
+        try:
+            audio = self._library_audio(item_id)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        review = audio.with_name(f"{audio.stem}.review.json")
+        if not review.is_file():
+            return {"ok": False, "error": "Review nicht gefunden. Bitte neu scannen."}
+        return self._register_review_from_path(review)
+
+    def prepare_library_transcription(self, item_id: Any) -> dict[str, Any]:
+        try:
+            audio = self._library_audio(item_id)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        marker = audio.with_name(f"{audio.stem}.json")
+        if not marker.is_file():
+            marker = None
+        with self._state_lock:
+            self._paths["audio"] = audio
+            self._paths["marker"] = marker
+        return {
+            "ok": True,
+            "audio_path": str(audio),
+            "marker_path": str(marker) if marker else "",
+        }
+
+    @staticmethod
+    def _settings_fingerprint(raw: dict[str, Any]) -> tuple[Any, ...]:
+        formats = raw.get("formats")
+        return (
+            tuple(sorted(formats)) if isinstance(formats, list) else (),
+            raw.get("backend"),
+            raw.get("colocate") is True,
+            raw.get("no_diarize") is True,
+            raw.get("auto_markers") is True,
+        )
+
+    def scan_batch(self, raw_settings: Any = None) -> dict[str, Any]:
+        if not isinstance(raw_settings, dict):
+            return {"ok": False, "error": "Ungültige Einstellungen."}
         with self._state_lock:
             watch_dir = self._paths["watch"]
             output_dir = self._paths["output"]
             running = self._active_batch_id is not None
         if running:
             return {"ok": False, "error": "Der Batch läuft bereits."}
-        if watch_dir is None or output_dir is None:
+        colocate = raw_settings.get("colocate") is True
+        if watch_dir is None or (output_dir is None and not colocate):
             return {"ok": False, "error": "Bitte Sync- und Ausgabeordner auswählen."}
-        if not watch_dir.is_dir() or not output_dir.is_dir():
+        output_unavailable = output_dir is None or not output_dir.is_dir()
+        if not watch_dir.is_dir() or (not colocate and output_unavailable):
             return {"ok": False, "error": "Sync- oder Ausgabeordner ist nicht verfügbar."}
-        items, skipped = self.batch_controller.scan(watch_dir, output_dir)
+        effective_output = output_dir or watch_dir
+        items, skipped = self.batch_controller.scan(watch_dir, effective_output, raw_settings)
         with self._state_lock:
             self._pending_batch = items
+            self._pending_batch_fingerprint = self._settings_fingerprint(raw_settings)
         return {
             "ok": True,
             "items": [
@@ -498,6 +709,9 @@ class Bridge:
                 return {"ok": False, "error": "busy", "busy": True}
             items = list(self._pending_batch)
             paths = dict(self._paths)
+            fingerprint = self._pending_batch_fingerprint
+        if fingerprint != self._settings_fingerprint(raw_settings):
+            return {"ok": False, "error": "Einstellungen geändert. Bitte neu scannen."}
         if not items:
             return {"ok": False, "error": "Bitte zuerst nach Dateien scannen."}
         built = []
@@ -691,7 +905,11 @@ class Bridge:
             return None
         with self._state_lock:
             current = self._paths.get(key)
-            initial = current.parent if current and key != "output" else current
+            initial = (
+                current.parent
+                if current and key not in {"output", "watch", "library"}
+                else current
+            )
         # Verschwundene Ordner (gelöscht, umbenannt, fremder tmp-Pfad) auf den
         # nächsten existierenden Elternordner zurückfallen lassen statt auf Home.
         while initial is not None and not initial.is_dir():
@@ -746,13 +964,14 @@ class Bridge:
             item not in {"txt", "md", "csv", "tsv"} for item in formats
         ):
             return "Ungültige Ausgabeformate."
-        if not paths["audio"] or not paths["output"]:
+        colocate = raw.get("colocate") is True
+        if not paths["audio"] or (not colocate and not paths["output"]):
             return "Bitte Audio-Datei und Ausgabeordner auswählen."
         return TranscriptionSettings(
             audio_path=paths["audio"],
             marker_path=paths["marker"],
             model_path=paths["model"],
-            output_dir=paths["output"],
+            output_dir=paths["output"] or paths["audio"].parent,
             formats=formats,
             language=None if language == "auto" else language,
             task=task,
@@ -764,6 +983,7 @@ class Bridge:
             verbose=raw.get("verbose") is True,
             no_diarize=raw.get("no_diarize") is True,
             auto_markers=raw.get("auto_markers") is True,
+            colocate=colocate,
         )
 
     @staticmethod
@@ -803,6 +1023,7 @@ class Bridge:
             self.config.set("last_verbose", params.verbose)
             self.config.set("last_no_diarize", params.no_diarize)
             self.config.set("last_auto_markers", params.auto_markers)
+            self.config.set("last_colocate", params.colocate)
 
         self.controller.update_config(self.config, update)
 

@@ -79,6 +79,7 @@ def test_save_output_options_persists_immediately(tmp_path):
     assert settings["keep_wav"] is True
     assert settings["no_diarize"] is True
     assert settings["auto_markers"] is False
+    assert settings["colocate"] is True
 
 
 def test_save_output_options_rejects_non_dict(tmp_path):
