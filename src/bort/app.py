@@ -169,7 +169,7 @@ class Bridge:
     def initial_state(self) -> dict[str, Any]:
         """Liefert den durch das JS-Readiness-Gate angeforderten Startzustand."""
         with self._state_lock:
-            formats = self.config.get("last_formats", "txt,md,csv,tsv")
+            formats = self.config.get("last_formats", "txt")
             return {
                 "ok": True,
                 "theme": self.config.get("last_theme", "dark"),
