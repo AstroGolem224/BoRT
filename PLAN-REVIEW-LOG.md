@@ -1,154 +1,240 @@
-# Plan Review Log: BoRT UI-Redesign — Navigation, Neon-Dark-Theme, Waveform-Player
-Act 1 (grill) complete — plan locked with the user (Peaks im Backend via ffmpeg-Streaming;
-Neon-Dark als Haupttheme, Light minimal; Waveform sprechergefärbt, Labels nur dominante Blöcke ≥5%;
-Codex baut allein, kein Kimi). MAX_ROUNDS=5.
+# Plan Review Log: BoRT Bibliothek, Co-located Layout, BoR-Peaks
+Act 1 (grill) complete — Vorschlag als DD, drei Kernfragen von Matthias bejaht
+(Colocate Batch-Default + Checkbox; Migration mit dry-run; Bibliothek v1 schlank). MAX_ROUNDS=5.
 
 ## Round 1 — Codex
-Material problems found; no files were modified.
+1. **Falscher GUI-Einstiegspunkt:** Der Plan ändert die Web-GUI, aber `bort-gui` und `run-gui.sh` starten weiterhin `bort.gui:main`, dessen eigener Worker `controller/jobs.py` nicht nutzt; die Features wären für den dokumentierten Startweg unsichtbar.  
+   Fix: `bort-gui` auf `bort.app:main` umstellen oder alle Änderungen ausdrücklich auch in `gui.py` und `batch_window.py` implementieren und testen.
 
-1. **The peak algorithm is underspecified and impossible as written.** A one-pass constant-memory stream cannot form exactly 1,500 equal-duration buckets before knowing the decoded sample count ([PLAN.md](/home/itiger013/Dokumente/Github/BoRT/PLAN.md:31)).  
-Fix: Probe duration/sample count first with `ffprobe`, then stream using a predetermined samples-per-bucket value, or specify a bounded hierarchical downsampler.
+2. **Batch findet keine Tagesordner:** `scan_pending()` verwendet `watch_dir.iterdir()`, während BoR Audios unter `yyyy-MM-dd/` ablegt; die geplante Colocate-Änderung erwähnt keine rekursive Suche.  
+   Fix: Den Batch-Scan kontrolliert über Root plus Tagesordner führen, Symlink-Verzeichnisse ausschließen und diese reale Ordnerstruktur testen.
 
-2. **The ffmpeg subprocess can deadlock or run forever.** Streaming stdout while retaining unread stderr can fill the stderr pipe, and the plan has no timeout, termination, `-nostdin`, or window-close cleanup.  
-Fix: Use `-nostdin -v error -map 0:a:0`, drain stderr concurrently, enforce a timeout/cancellation path, and terminate/reap the child in `finally`.
+3. **Unklare Fertig-Semantik:** „Ein Nachbar mit passender mtime“ lässt ein vorhandenes `.txt` alle anderen gewählten Formate sowie eine fehlende Review maskieren; beim Wechsel der Formatauswahl wird nicht nachgearbeitet.  
+   Fix: `scan_pending` die aktuell verlangten Formate übergeben und nur überspringen, wenn der vollständige erwartete Output-Satz vorhanden und aktuell ist.
 
-3. **The cache key provides almost no useful reuse.** Every `pick_review_file` creates a new UUID ([app.py](/home/itiger013/Dokumente/Github/BoRT/src/bort/app.py:189)), so reopening the same review decodes it again; concurrent calls can also launch duplicate ffmpeg processes.  
-Fix: Cache and coalesce in-flight work by resolved audio path plus size/mtime, with locking and bounded eviction.
+4. **`overwrite=True` kann bestehende Ergebnisse löschen:** `write_outputs()` schreibt direkt über Produktivdateien und löscht im Fehlerfall alle bereits „geschriebenen“ Pfade — darunter zuvor vorhandene gültige Dateien.  
+   Fix: Sämtliche Outputs zunächst in temporäre Dateien desselben Dateisystems schreiben, erfolgreich schließen/fsyncen und erst danach per `os.replace` als Satz veröffentlichen.
 
-4. **Frontend response ordering is unsafe.** If review A’s slow waveform request completes after review B is selected, A’s peaks can overwrite B’s display.  
-Fix: Capture the requested `reviewId` and discard success/error responses unless it still equals the active `reviewId`.
+5. **Auto-Marker werden außerhalb dieses Satzes geschrieben:** `*.markers.json` entsteht vor `write_outputs`; bei späterem Fehler bleibt eine neue Marker-Datei neben alten oder fehlenden Transkripten zurück.  
+   Fix: Auto-Marker in denselben atomaren Output-Commit aufnehmen oder erst nach erfolgreichem Transkript-Commit atomar ersetzen.
 
-5. **The failure UX is missing.** Bridge calls reject promises, but the planned call has no defined `catch`; existing handlers generally assume structured successful responses ([app.js](/home/itiger013/Dokumente/Github/BoRT/src/bort/web/app.js:394)).  
-Fix: Catch waveform failures, retain a usable seek bar, clear loading state, and report a nonfatal message in `speaker-status`.
+6. **mtime ist kein zuverlässiger Provenienzbeleg:** Syncthing kann Zeitstempel bewahren, Geräteuhren können abweichen und ein fremdes oder zukünftiges Output-mtime kann eine neue Audiofassung dauerhaft maskieren.  
+   Fix: Eine kleine Completion-Metadatei mit Audio-Fingerprint, Backend und Formaten verwenden, statt Aktualität ausschließlich über mtime zu bestimmen.
 
-6. **“Sorted valid segments” is a false assumption.** `load_review` neither sorts segments nor rejects NaN, infinity, negative times, `end <= start`, or out-of-duration values ([speaker_review.py](/home/itiger013/Dokumente/Github/BoRT/src/bort/speaker_review.py:80)).  
-Fix: Validate and normalize a copied segment list before rendering, with deterministic clipping and ordering rules.
+7. **Migration ist nicht transaktional:** Einzelnes `shutil.move` plus „Kollision überspringen“ kann eine Dateifamilie halb migrieren und anschließend eine bereits verschobene Review umschreiben.  
+   Fix: Pro Aufnahme zuerst alle Quellen, Ziele und Kollisionen prüfen und anschließend die komplette Familie all-or-nothing mit Rollback beziehungsweise Copy-verify-replace verschieben.
 
-7. **`speaker_id` is not reliably recoverable from the current schema.** Registration reverses display names into IDs; duplicate speaker names overwrite one another and can yield wrong or missing IDs, contradicting the plan’s claim that review data already contains reliable IDs.  
-Fix: Add stable `speaker_id` fields to review segments with a schema migration, or explicitly reject ambiguous duplicate display names.
+8. **Migration verliert heutige Kollisionsnamen:** Bestehende Outputs heißen durch `_unique_base_name` häufig `<audio>_1.*`; exakter Stem-Match findet dafür keine Audioaufnahme, obwohl die Review ihr echtes `audio_path` enthält.  
+   Fix: Reviews primär über validiertes `audio_path` zuordnen und zugehörige nummerierte Output-Familien explizit behandeln beziehungsweise als nachvollziehbare Konflikte melden.
 
-8. **Overlapping segments have no color precedence rule.** Multiple speakers can cover the same x-position, but “lookup the segment at this time” is ambiguous.  
-Fix: Define deterministic precedence—such as greatest overlap with the bucket, then earliest segment index—and test it.
+9. **Co-location kollidiert mit „Review umbenennen“:** `rename_base()` benennt Audio, Review und Ausgabeformate um, aber weder die BoR-Sidecar `<stem>.json` noch `<stem>.markers.json`; danach sind Paarungs-Invariante und Android-Schema gebrochen.  
+   Fix: Im Colocate-Modus das Basisnamen-Renaming deaktivieren oder die gesamte Familie atomar umbenennen und das BoR-`file`-Feld konsistent aktualisieren.
 
-9. **The label threshold will usually render no labels.** Five percent of a 77-minute recording requires nearly four continuous minutes from one speaker, which is unrealistic for conversational diarization.  
-Fix: Base label eligibility on available pixel width and measured label width, then resolve collisions greedily.
+10. **„Sofort-Waveform“ funktioniert mit dem bestehenden Gate nicht:** `tryRenderWaveform()` wartet auf Medien-Metadaten und benötigt eine Dauer; der Plan liefert nur `sidecar_peaks`, nicht `durationMs`.  
+    Fix: Auch die validierte Sidecar-Dauer liefern und einen Sidecar-spezifischen Renderpfad definieren, der vor `loadedmetadata` zeichnen darf und bei fehlender Dauer sauber degradiert.
 
-10. **Keyboard support is claimed to be preserved but does not currently exist.** The slider has `tabindex`, yet there is no player `keydown` handler or `aria-valuenow` maintenance ([index.html](/home/itiger013/Dokumente/Github/BoRT/src/bort/web/index.html:60), [app.js](/home/itiger013/Dokumente/Github/BoRT/src/bort/web/app.js:449)).  
-Fix: Specify Arrow/Home/End behavior and continuously update `aria-valuemin`, `aria-valuemax`, `aria-valuenow`, and `aria-valuetext`.
+11. **Sidecar-Auswahl ist zu unscharf:** „`find_companion_marker`-artig“ kann auf BoRT-`markers.json` ausweichen; außerdem wird nicht verlangt, dass das kanonische `file`-Feld zur Audio-Datei passt.  
+    Fix: Peaks ausschließlich aus dem exakten `<audio.stem>.json` lesen und `file == audio.name` validieren, ohne Fallback auf `.markers.json`.
 
-11. **Canvas correctness across DPI, hidden views, and theme changes is absent.** CSS resizing alone produces blurry output, initial hidden geometry can be zero, and cached colors will become stale after a theme toggle.  
-Fix: Size the backing store using `devicePixelRatio`, observe the actual container with `ResizeObserver`, and invalidate caches on visibility and theme changes.
+12. **Reader lässt gefährliche Zahlen offen:** „Müll“ ist nicht spezifiziert; Strings, Booleans, negative Werte, `NaN`/Infinity und riesige Peak-Listen können Transport oder Canvas-Berechnungen beschädigen beziehungsweise Speicher binden.  
+    Fix: Nur endliche echte Zahlen akzeptieren, auf `[0,1]` begrenzen, Dauer und Listengrößen deckeln und ungültige Einträge verwerfen oder die Sidecar diagnostiziert ablehnen.
 
-12. **The proposed test is environment-dependent and far too narrow.** Calling real ffmpeg from a “unit test” makes the suite fail where ffmpeg is absent and leaves cache, errors, stale responses, malformed audio, silence, and duration mismatch untested.  
-Fix: Unit-test the reducer with synthetic PCM, mock subprocess/Bridge behavior, add explicit failure and concurrency cases, and keep a separately skipped ffmpeg integration test.
+13. **Resampling-Vertrag widerspricht dem Handover und der UI:** Der Plan verlangt 34 Balken, lässt Quellen mit `<34` Werten aber unverändert, obwohl das Handover für jede Länge ≠104 Resampling fordert.  
+    Fix: Für jede nichtleere Eingabelänge eine exakt 34 Werte lange, eindeutig spezifizierte Ausgabe erzeugen und Downsampling sowie Upsampling gegen feste Referenzvektoren testen.
 
-13. **Visual verification is not reproducible.** The three referenced mockups are not identified by repository paths, and there are no measurable layout or accessibility acceptance criteria.  
-Fix: Add exact mockup artifact paths and a viewport-by-viewport checklist covering overflow, contrast, focus states, and waveform behavior.
+14. **Sortierung nach Dateiname ist eine falsche Datenannahme:** `startedAt` ist das kanonische Zeitfeld, während unterstützte Audios nicht zwingend dem BoR-Namensschema folgen.  
+    Fix: Nach validiertem `startedAt`, dann Audio-mtime und erst zuletzt Name sortieren.
+
+15. **Bibliotheks-Cap schützt nicht vor Scan-Kosten:** Ein Cap auf die Ergebnisliste verhindert weder das Durchlaufen sehr großer Verzeichnisse noch das vollständige Laden übergroßer JSON-Sidecars.  
+    Fix: Tiefe, Anzahl untersuchter Dateien, Sidecar-Größe und Parse-Aufwand hart begrenzen und `scanned/truncated/errors` im Resultat ausweisen.
+
+16. **Library-State kann mit Aktionen konkurrieren:** Der Plan definiert keine atomare Ersetzung der `item_id → Pfade`-Map; ein Re-Scan kann IDs während `open_library_review` oder `prepare_library_transcription` invalidieren.  
+    Fix: Pro Scan eine Generation erzeugen, die Map unter `_state_lock` atomar ersetzen und bei jeder Aktion Generation, Existenz und Root-Zugehörigkeit erneut prüfen.
+
+17. **„Kein Pfad-Leak“ ist sachlich falsch:** `prepare_library_transcription()` soll beide Pfade zurückgeben, und `initial_state()` liefert ohnehin alle `_paths` an JavaScript.  
+    Fix: Entweder die Sicherheitsbehauptung streichen oder ausschließlich opake IDs zurückgeben und Pfadfelder nur serverseitig setzen.
+
+18. **Bibliotheksaktionen können unnötig verschwinden:** „Transkribieren“ wird schon bei irgendeinem Transcript ausgeblendet, wodurch unvollständige, veraltete oder nur teilweise erzeugte Familien nicht bequem reparierbar sind.  
+    Fix: Den Button immer anbieten oder Statuswerte wie `complete`, `partial`, `stale` und `missing` statt eines einzelnen `has_transcript`-Bits verwenden.
+
+19. **Beobachtbarkeit ist unzureichend:** Halb geschriebene oder ungültige Sidecars werden laut Plan kommentarlos zu Defaults; Nutzer können „keine Peaks“ nicht von „kaputte Sync-Datei“ unterscheiden.  
+    Fix: Parsefehler mit Pfad und Grund loggen und im Scan eine kompakte Warnungs- und Fehleranzahl zurückgeben.
+
+20. **Migrationstests decken den gefährlichen Pfad nicht ab:** Es fehlen Tests für nummerierte Altoutputs, Teilkollisionen innerhalb einer Familie, Fehler mitten im Move, Cross-Filesystem-Moves, ungültige Reviews und Wiederholung nach Abbruch.  
+    Fix: Diese Fälle ergänzen und Idempotenz sowie vollständigen Rollback als explizite Akzeptanzkriterien festlegen.
 
 VERDICT: REVISE
 ### Claude's response (R1)
-Akzeptiert und eingearbeitet: #1 (ffprobe-Zweiphasen + pure reduce_peaks), #2 (Subprozess-Hygiene: -nostdin, stderr-Drain, Timeout, finally-Reap), #3 (Cache-Key path+size+mtime, LRU, In-flight-Koaleszenz), #4 (Stale-Response-Guard auf reviewId), #5 (Fehler-UX: Fallback-Seekbalken + Statusmeldung), #6 (Frontend-Normalisierung sortierter/geclippter Segment-Kopie), #8 (Bucket-Farb-Präzedenz: max Überlappung, Tie earliest start/index), #9 (pixelbasierte Label-Auswahl statt 5%-Schwelle), #10 (keydown + aria-value* explizit neu), #11 (devicePixelRatio, ResizeObserver, Cache-Invalidierung bei Theme/Sichtbarkeit), #12 (pure-Reducer-Unit-Tests + gemockte Subprozess-Fehlerpfade + skipif-Integrationstest), #13 (Abnahme-Checkliste; Mockups sind Chat-Artefakte, Token-Spec im Plan = Source of Truth).
-Teilweise abgelehnt: #7 Schema-Migration für stabile speaker_ids — Duplikat-Namen-Kollision ist Bestandsverhalten und orthogonal zum UI-Redesign; Plan konsumiert speaker_id als opaken Wert und verlässt sich nicht auf Invertierbarkeit. Migration explizit out of scope.
+Akzeptiert (19/20): #1 Einstiegspunkte auf bort.app:main (Teil 0, verifiziert: pyproject/__main__ zeigten auf Tk-gui), #2 Tiefe-1-Scan ohne Symlinks, #3 Format-vollständige Fertig-Semantik, #4+#5 atomarer tmp+os.replace-Commit inkl. markers.json, #7 transaktionale Familien-Migration mit Copy-verify-replace+Rollback, #8 Zuordnung primär via review.audio_path (deckt _1-Basenames), #9 Rename bei BoR-Reviews deaktiviert (readonly+Hinweis), #10 sidecar_duration_ms + Vor-loadedmetadata-Renderpfad, #11 exakte <stem>.json mit file-Validierung, #12 strikte Wertevalidierung+Caps, #13 resample_peaks liefert immer exakt 34 (Referenzvektoren), #14 Sortierung startedAt→mtime→Name, #15 harte Scan-Caps + scanned/truncated/warnings, #16 Scan-Generation unter Lock, #17 Pfad-Leak-Behauptung gestrichen, #18 Transkribieren-Button immer sichtbar + formats_present, #19 Logging + Warnungszähler, #20 Migrationstests erweitert (Rollback, Idempotenz, nummerierte Altoutputs).
+Teilweise abgelehnt: #6 Completion-Metadatei — würde in den Sync wandern (Ordner-Müll auf dem Handy); mtime-Risiko akzeptiert, da BoR-Audios nach Sync unveränderlich sind und der Bibliotheks-Button den manuellen Ausweg bietet.
 
 ## Round 2 — Codex
-Most prior findings are addressed, but several material issues remain.
+Most prior findings are now addressed, including entry points, recursive scanning, sidecar validation, scan generations, resampling, observability, and waveform duration. Material issues remain:
 
-1. **The `speaker_id` problem is acknowledged, not solved.** Existing registration derives IDs by reversing display names, so duplicate names still produce incorrect/missing IDs; treating those values as opaque does not make them reliable ([PLAN.md](/home/itiger013/Dokumente/Github/BoRT/PLAN.md:67)).  
-Fix: Preserve stable IDs in the review schema, or use the segment’s speaker value as the explicit color key and document that duplicate display names share a color.
+1. **The output set is still not atomic:** Sequential `os.replace` calls cannot publish a “whole set” atomically; if the second replacement fails, the first old output is already lost, and auto-markers are explicitly published afterward.  
+   Fix: Keep backups and rollback on publish failure, plus a crash-recovery journal/completion marker, or weaken the guarantee to per-file atomicity and design scanning around partial generations.
 
-2. **`ffprobe format.duration` is not a reliable bucket boundary source.** It can be absent, non-finite, or inaccurate for VBR and damaged containers, causing more than 1,500 buckets or timeline drift ([PLAN.md](/home/itiger013/Dokumente/Github/BoRT/PLAN.md:31)).  
-Fix: Validate duration, add stream-duration fallbacks, enforce a hard output limit, and define one canonical duration shared by waveform coloring, labels, seeking, and clipping.
+2. **Temporary names can collide:** `NAME.EXT.tmp-<pid>` is reused by concurrent operations in the same process, including speaker edits and transcription.  
+   Fix: Create each temporary file exclusively with a UUID/random suffix in the target directory and clean stale temporary files safely.
 
-3. **The stderr design is contradictory.** Output cannot simultaneously go to `DEVNULL` and provide a diagnostic “last stderr rest”; this leaves implementers without a definite deadlock-safe design ([PLAN.md](/home/itiger013/Dokumente/Github/BoRT/PLAN.md:32)).  
-Fix: Always use `PIPE` with a bounded concurrent stderr collector, or always use `DEVNULL` and return only a generic error.
+3. **Batch scanning cannot receive the selected formats as currently specified:** `scan_batch()` takes no settings and the frontend calls `api.scan_batch()` without `formSettings()`, so `scan_pending` cannot know formats or `colocate`.  
+   Fix: Change the complete call chain to `scan_batch(formSettings())`, validate it server-side, and pass `formats` plus `colocate` through `BatchController.scan`.
 
-4. **Termination can still hang.** `terminate()` followed by unbounded `wait()` is insufficient when ffmpeg ignores SIGTERM, and the duration-proportional timeout has no maximum.  
-Fix: Use deadline-based streaming, `terminate()`, bounded `wait()`, then `kill()` plus a final bounded reap, with a fixed maximum timeout.
+4. **Backend-dependent artifacts remain outside completion semantics:** Checking only selected transcript formats treats a whisperX recording with a missing `.review.json` or requested auto-marker file as complete.  
+   Fix: Derive the complete expected artifact set from backend, diarization, auto-marker, and format settings and require all applicable artifacts.
 
-5. **Window-close cancellation remains missing.** Waveform subprocesses can continue decoding after `on_window_closed`, potentially until the large proportional timeout expires.  
-Fix: Track active extraction cancellation tokens/processes in `Bridge` and cancel/terminate them from `on_window_closed`.
+5. **Numbered migration families still violate the pairing invariant:** Moving `session_1.review.json` beside `session.m4a` without renaming it means the library’s `<audio.stem>.review.json` lookup and colocated output checks will not find it.  
+   Fix: Define which historical generation wins, rename that family to the exact audio stem transactionally, and report additional generations as conflicts or archive candidates.
 
-6. **Duration mismatch behavior is still undefined.** `<audio>.duration`, probed container duration, decoded PCM duration, segment endpoints, and bookmark times may disagree; the plan never states which controls x-position and seeking.  
-Fix: Use media duration for the player timeline, map every peak by decoded sample-time, and specify clipping/fallback behavior when durations differ beyond a tolerance.
+6. **Migration verification is only a size comparison:** Equal size does not establish that a cross-filesystem copy is intact, and the plan does not clearly state when sources are deleted or how they are restored.  
+   Fix: Copy, flush/fsync, verify a cryptographic digest, publish, then delete sources; record enough state to roll back or resume after interruption.
 
-7. **The integration-test skip condition is incomplete.** Extraction now requires both `ffmpeg` and `ffprobe`, but the test skips only when ffmpeg is missing ([PLAN.md](/home/itiger013/Dokumente/Github/BoRT/PLAN.md:36)).  
-Fix: Skip unless both executables are available and add a separate mocked `ffprobe` malformed-duration test.
+7. **Rename protection is described only as UI state:** Making the field readonly does not stop a direct Bridge call to `rename_review`, and checking only for any sidecar with a `file` field is weaker than the new canonical reader.  
+   Fix: Enforce the prohibition in the Python Bridge/controller using the validated exact sidecar and matching `file == audio.name`; treat readonly UI as presentation only.
 
-8. **The most failure-prone frontend logic has no automated tests.** Stale-response rejection, normalization, overlap precedence, label collision, keyboard seeking, and ARIA updates are covered only by manual inspection.  
-Fix: Extract these into pure JavaScript functions and add focused automated tests, leaving only canvas appearance for manual QA.
+8. **The frontend specification contradicts the revised action rule:** Step 8 says “Transkribieren” is always visible, while step 9 still says it appears only when no transcript exists.  
+   Fix: Change step 9 to always show the button and render `formats_present` as the status badges.
+
+9. **The 500-item cap can return the wrong recordings:** If scanning stops after the first 500 encountered files, sorting afterward does not produce the newest 500.  
+   Fix: Inspect up to the 5000-entry scan cap while maintaining a bounded top-500 collection using the final timestamp sort key.
+
+10. **Timestamp sorting is underspecified:** ISO input can be timezone-aware or naive; comparing mixed Python datetimes raises `TypeError`, and `None` also needs an explicit ordering.  
+    Fix: Normalize valid timestamps to UTC, define naive-time handling, and use a fully numeric fallback sort key.
+
+11. **The Risks section contradicts the reader contract:** It says broken JSON “liefert Defaults,” while step 6 returns `None` for rejection and aggregates warnings.  
+    Fix: State one precise behavior—prefer `None` plus logged/aggregated warning—and test the library fallback rendering for it.
 
 VERDICT: REVISE
 ### Claude's response (R2)
-Akzeptiert: #1 (Farb-Key = gelieferter Segment-speaker_id, Duplikate teilen dokumentiert eine Farbe; keine Migration), #2+#6 (Dauer-Validierung mit Stream-Fallback, MAX_BUCKETS=4000 mit Re-bin; kanonische Dauer = decodierte PCM-Dauer, Seeking = Bruchteil × audio.duration, >2% Mismatch nur geloggt), #3 (stderr immer PIPE + begrenzter nebenläufiger Kollektor ~4KB), #4 (Deadline min(60s+2s/min, 600s), terminate→wait(5s)→kill→wait(5s), auch im finally), #5 (Prozess-Registry in Bridge, on_window_closed terminiert), #7 (skipif ffmpeg UND ffprobe; gemockte ffprobe-Müll-Tests).
-Teilweise akzeptiert: #8 — pure Logik nach wave_math.js extrahiert und via node --test getestet (Node v26 vorhanden, skipif node fehlt); Canvas-Zeichnung/DOM bleiben manuelle QA. Kein zusätzliches JS-Test-Framework/npm — node:test reicht.
+Alle elf akzeptiert: #1 Garantie präzisiert auf Per-Datei-Atomarität + Backup(.bak)-Rollback + Crash-Aufräumpfad (kein „atomarer Satz" mehr behauptet), #2 exklusive uuid4-tmp-Namen, #3 formSettings durch die ganze scan_batch-Kette, #4 Artefakt-Satz aus Settings abgeleitet (Formate+review.json+markers.json), #5 Migration benennt Familie auf exakten Audio-Stem um (jüngste Review-mtime gewinnt, Rest Konflikt), #6 SHA-256-Verify + Copy-first + Quell-Löschung erst nach Familien-Publish, #7 Rename-Verbot im Backend via kanonischem Sidecar-Reader durchgesetzt, #8 Schritt-9-Widerspruch behoben (Button immer sichtbar), #9 Top-500 via heapq über vollen Scan, #10 numerischer UTC-Epoch-Sortschlüssel mit mtime-Fallback, #11 Reader-Verhalten vereinheitlicht (None + Warnung, Fallback-Rendering getestet).
 
 ## Round 3 — Codex
-The previous eight findings are mostly addressed. Four material issues remain.
+Most earlier findings are addressed, but several material race and consistency problems remain:
 
-1. **The two-duration model is still internally inconsistent.** Segments and bookmarks are positioned using decoded PCM duration, but clicks seek using `fraction × audio.duration`; with a 10% mismatch, a marker at 45 seconds is displayed at one fraction and seeks to another time ([PLAN.md](/home/itiger013/Dokumente/Github/BoRT/PLAN.md:32)).  
-Fix: Use `audio.duration` for all timeline overlays and seeking, stretching the peak array across that same visual timeline; retain PCM duration only for diagnostics.
+1. **Backup rollback is still incorrect during phase (b):** After the first original is moved to `.bak`, failure on a later backup means the original set is no longer “unberührt”; merely cleaning `.bak` would delete recoverable originals.  
+   Fix: On any phase-(b) failure, restore every already-created backup before deleting temporaries.
 
-2. **The deadline may not interrupt a blocking stdout read.** A loop checking elapsed time cannot enforce the timeout if `Popen.stdout.read()` blocks while ffmpeg hangs without producing output ([PLAN.md](/home/itiger013/Dokumente/Github/BoRT/PLAN.md:33)).  
-Fix: Read stdout in a worker thread/selector loop and enforce the deadline from an independent watchdog that terminates the process.
+2. **Crash recovery can preserve a mixed generation:** Restoring a `.bak` only when its destination is missing fails if some new files were already published before the crash; those destinations exist but belong to an incomplete transaction.  
+   Fix: Use a transaction manifest and transaction-specific backups, then restore every member of an incomplete transaction regardless of whether its destination currently exists.
 
-3. **The file-size fallback can permanently destroy waveform resolution.** It may greatly overestimate decoded duration for multichannel PCM or high-bitrate containers; dynamic re-binning only fixes underestimation, leaving far fewer useful buckets when overestimated ([PLAN.md](/home/itiger013/Dokumente/Github/BoRT/PLAN.md:31)).  
-Fix: When probing fails, begin with a small fixed sample bucket and hierarchically re-bin whenever `MAX_BUCKETS` is reached, instead of estimating duration from compressed file size.
+3. **Fixed `.bak` names introduce collision and data-loss risks:** Concurrent speaker edits or stale recovery files can share `NAME.EXT.bak`, and `os.replace` may overwrite the only prior backup.  
+   Fix: Use UUID-scoped backup names plus a per-family lock/manifest and never overwrite an unrelated recovery artifact.
 
-4. **Window-close process registration still has a race.** A subprocess can be created after `on_window_closed` has drained the registry and therefore escape cancellation ([PLAN.md](/home/itiger013/Dokumente/Github/BoRT/PLAN.md:34)).  
-Fix: Atomically register each process against Bridge closed-state before decoding; if already closed, terminate immediately, and always unregister in `finally`.
+4. **Rollback omits newly created artifacts:** If an output had no previous version, it has no `.bak`; after partial publication, rollback must delete that new destination.  
+   Fix: Record pre-transaction existence for every artifact and remove published files that had no predecessor during rollback.
 
-Minor inconsistency: the payload is now allowed up to 4,000 peak pairs, while the tradeoff section still describes approximately 1,500 ([PLAN.md](/home/itiger013/Dokumente/Github/BoRT/PLAN.md:68)); update the documented response bound.
+5. **Batch artifact rules do not match the worker:** Current `_review_data()` creates a review for every whisperX run, including `no_diarize`, while markers are written only for `whisperX && auto_markers && !no_diarize`; the plan specifies different conditions.  
+   Fix: Define one shared `expected_artifacts(settings)` function used by both worker and scanner: review for every actual review-producing run, markers only when whisperX diarization and auto-markers are both active.
+
+6. **Scan and start settings can race:** The pending list is computed from settings passed to `scan_batch`, but `start_batch(formSettings())` can receive changed formats, backend, or `colocate`, causing recordings missing the new artifact set to be absent from the batch.  
+   Fix: Store a normalized settings fingerprint with `_pending_batch` and reject start with “Bitte neu scannen” unless the start settings match exactly.
+
+7. **External state can change between scan and processing:** Syncthing or another run may complete outputs after scanning, yet `_process_item` only rechecks source stability and will retranscribe unnecessarily.  
+   Fix: Re-evaluate the bound expected artifact set immediately before each batch item and skip it if it has become complete.
+
+8. **Migrated review schema remains inconsistent after `_1` renaming:** Renaming `session_1.review.json` to `session.review.json` without changing its internal `base_name` leaves later speaker edits writing `session_1.*` again.  
+   Fix: Atomically update both `base_name` to the exact audio stem and `audio_path` while publishing the migrated review.
+
+9. **Review-controlled migration targets are insufficiently constrained:** A valid-looking `audio_path` can point outside `--recordings`, causing the migration script to copy outputs to an arbitrary filesystem location.  
+   Fix: Resolve the audio path, require a supported audio file strictly beneath the resolved recordings root, and reject symlink escapes.
+
+10. **Rename protection has a sync-time bypass:** If the exact BoR sidecar is temporarily half-written, the canonical reader returns `None`, allowing `rename_review` to rename the audio while Syncthing is writing its companion.  
+    Fix: Conservatively reject renaming whenever the exact `<stem>.json` exists, even if currently invalid, or require a stable validated read before permitting it.
+
+11. **Migration publication is not explicitly staged:** “Copy, verify, then publish” does not state that copying occurs under a temporary target name; copying directly to the final path exposes incomplete files to Syncthing and the library.  
+    Fix: Copy into UUID temporary files at the destination, fsync and hash-verify them, then publish with `os.replace`.
+
+12. **Verification still misses the newly claimed recovery guarantees:** Tests cover an exception during writing but not failures during backup, partial publish, process crash recovery, or scan/start setting mismatch.  
+    Fix: Add fault-injection tests for every transaction phase, incomplete-manifest recovery, new-file rollback, stale backups, and changed batch settings.
 
 VERDICT: REVISE
 ### Claude's response (R3)
-Alle vier Punkte akzeptiert: #1 audio.duration ist einzige Timeline-Autorität für Overlays und Seeking, Peaks gestreckt, PCM-Dauer nur Diagnose; #2 stdout-Worker-Thread + unabhängiger Watchdog, Kill löst blockierenden read via EOF; #3 Dateigrößen-Schätzung gestrichen, fester kleiner Bucket-Start + hierarchisches Re-bin ×2 bei MAX_BUCKETS; #4 Registry + closed-Flag unter einem Lock, atomare Registrierung, Deregistrierung im finally. Minor: Payload-Doku auf ≤4000 Paare korrigiert.
+Alle zwölf akzeptiert: #1–#4 Output-Commit als Manifest-Transaktion (txn-uuid auf tmp UND bak, Manifest mit had_predecessor, Phase-b-Restore, Rollback löscht vorgängerlose Publikationen, Crash-Recovery rollt jedes Manifest vollständig zurück, In-Process-Lock pro Zielordner); #5 geteilte expected_artifacts() exakt nach realem Worker-Verhalten (review auch bei no_diarize, markers nur whisperX∧auto_markers∧¬no_diarize); #6 Settings-Fingerprint am Pending-Set, Start-Mismatch → „Bitte neu scannen"; #7 Re-Check des Artefakt-Satzes pro Batch-Item; #8 Migration setzt base_name UND audio_path in einem Schritt; #9 audio_path strikt unter recordings-Root (resolved, kein Symlink-Escape); #10 Rename-Ablehnung bei bloßer Existenz der <stem>.json; #11 Migration kopiert in UUID-tmp am Ziel + os.replace; #12 Fault-Injection-Tests je Transaktionsphase + Manifest-Recovery + Fingerprint-Mismatch.
 
 ## Round 4 — Codex
-The previous four findings are conceptually addressed. New edge cases remain.
+The twelve prior findings are substantially addressed. The remaining problems are mostly in crash semantics and migration consistency:
 
-1. **Rendering has an unresolved readiness race.** A cached waveform can return before `<audio>` fires `loadedmetadata`, leaving canonical `audio.duration` as `NaN` when segments are clipped and overlays rendered ([PLAN.md](/home/itiger013/Dokumente/Github/BoRT/PLAN.md:32), [PLAN.md](/home/itiger013/Dokumente/Github/BoRT/PLAN.md:44)).  
-Fix: Gate waveform rendering on both a valid waveform result and `loadedmetadata`, with the active review/source checked again before rendering.
+1. **The output transaction has no safe commit point:** Step (e) says “Backups + Manifest löschen” without ordering; deleting backups first and crashing before manifest deletion makes recovery restore only part of the old generation.  
+   Fix: Treat atomic manifest removal as commit, fsync the directory, and delete backups only afterward; recovery rolls back whenever the manifest still exists.
 
-2. **Media metadata failure has no fallback path.** ffmpeg may decode formats that WebKitGTK cannot play; without finite `audio.duration`, the declared timeline authority, seek bar, ARIA values, and overlays all fail.  
-Fix: Handle the audio element’s `error` event explicitly, disable playback/seek controls, use PCM duration for a noninteractive waveform preview, and report the playback failure.
+2. **Manifest creation is not itself atomic or durable:** Writing the manifest directly can leave truncated JSON, and file `fsync` alone does not guarantee its directory entry or subsequent renames survive a crash.  
+   Fix: Write the manifest to a UUID temp file, fsync it, `os.replace` it, and fsync the target directory after manifest publication, backup moves, output publication, and commit.
 
-3. **The watchdog timeout is undefined when probing fails.** The formula requires “Audiominute,” but the probe-failure path deliberately has no duration estimate ([PLAN.md](/home/itiger013/Dokumente/Github/BoRT/PLAN.md:31), [PLAN.md](/home/itiger013/Dokumente/Github/BoRT/PLAN.md:33)).  
-Fix: Specify a fixed conservative deadline, such as 600 seconds, whenever no validated duration is available.
+3. **Recovery trusts attacker-controlled filenames:** A synced or manually created `.bort-txn-*.json` could name `../../…`, the audio file, or unrelated files and cause recovery to overwrite or delete them.  
+   Fix: Strictly validate manifest schema, transaction ID, basename-only paths, allowed output suffixes, expected audio stem, and matching tmp/bak names; quarantine invalid manifests without mutating referenced files.
 
-4. **Multiple termination paths can race.** The watchdog, window-close handler, normal `finally`, and possibly error handling may concurrently call `terminate`, `wait`, and `kill` on the same process.  
-Fix: Route all shutdown through one idempotent per-process termination helper protected by a lock and checking `poll()` before each escalation.
+4. **An in-process directory lock does not cover multiple BoRT instances:** Two GUI processes can interleave backup and publication transactions for the same recording and corrupt each other despite UUID filenames.  
+   Fix: Add an OS-level advisory lock per target directory or output family and hold it through recovery and the complete transaction.
 
-5. **Coalesced callers can hang after cancellation unless failure publication is guaranteed.** The plan does not say that closing the window or aborting the leader completes every waiting Future/Event and removes the in-flight entry.  
-Fix: In one `finally` block, publish either result or exception to all waiters, remove the in-flight key, and never cache failed or partial extraction results.
+5. **Committed orphan backups have no cleanup policy:** A crash after manifest commit but before backup deletion leaves UUID backups forever, while the tests explicitly leave orphan backups untouched.  
+   Fix: With the durable commit ordering above, safely remove transaction backups whose manifest is absent, using strict filename validation and preferably an age threshold.
 
-6. **A valid but grossly inaccurate probe can still collapse resolution.** Adaptive re-binning handles underestimated duration, but an overestimated positive duration can initially create buckets so large that lost detail cannot be recovered.  
-Fix: Use hierarchical streaming from a fixed small bucket size for every file; use ffprobe only for timeout planning and diagnostics.
+6. **Non-colocate batch behavior is still undefined:** The plan says artifacts must be beside the audio and says “kein `rglob`,” but checkbox-off outputs remain under `output_dir/YYYY-MM-DD/` per the out-of-scope promise.  
+   Fix: Specify separate branches: direct sibling checks for colocate, and preserved output-tree lookup for non-colocate, both using the same expected-artifact set.
+
+7. **Migration exposes an internally stale review before rewriting it:** The old review is published under `session.review.json` while still containing `base_name: session_1`, then rewritten afterward; Syncthing or the library can observe that inconsistent interval.  
+   Fix: Normalize `audio_path` and `base_name` in the destination temporary review before publishing any family member.
+
+8. **Migration restart semantics contradict digest comparison:** After normalization, the destination review intentionally differs from the source, so a crash before source deletion makes “identical target = done” fail and report a conflict on restart.  
+   Fix: Compare the destination review against the normalized expected review bytes, not the original source digest.
+
+9. **Migration claims rollback without defining it:** Verification says “Fehler mitten im Move → Rollback,” but the algorithm allows already published destination members to remain while only promising that sources stay intact.  
+   Fix: Choose and specify either full destination rollback or resumable partial publication with a migration manifest; align tests and user-facing reporting with that choice.
+
+10. **Recovery timing leaves mixed outputs visible:** Recovery occurs only “beim nächsten Lauf im Zielordner,” so library and batch scans can consume a crash-interrupted generation before another write happens.  
+    Fix: Run transaction recovery before any scan/read of a directory containing transaction manifests, not only before the next overwrite.
 
 VERDICT: REVISE
 ### Claude's response (R4)
-Alle sechs akzeptiert: #1 Readiness-Gate (Waveform-Ergebnis UND loadedmetadata, Re-Check der aktiven reviewId vorm Render); #2 audio-error-Event → Controls deaktiviert, nicht-interaktive Vorschau mit PCM-Dauer, Statusmeldung; #3 fixe 600s-Deadline ohne valide Probe-Dauer; #4 ein idempotenter lock-geschützter Terminierungs-Helfer mit poll()-Checks für alle Pfade; #5 Leader publiziert im finally immer Ergebnis/Exception an alle Warter, In-flight-Key entfernt, Fehlschläge nie gecacht; #6 hierarchisches Streaming ab kleinem festem Bucket für ALLE Dateien, ffprobe nur noch für Watchdog/Diagnose (vereinfacht den Algorithmus).
+Alle zehn akzeptiert: #1 Commit-Punkt = atomares Manifest-Löschen + dir-fsync, Backups erst danach; #2 Manifest via UUID-tmp + os.replace + dir-fsync an allen vier Punkten; #3 strikte Manifest-Validierung (Schema, txn-ID, basename-only, Suffix-Whitelist), invalide → .invalid-Quarantäne ohne Mutation; #4 fcntl.flock auf .bort-lock pro Zielordner über Recovery+Transaktion (Zwei-Instanzen-Schutz); #5 committed-Orphan-Cleanup mit Validierung + 1h-Altersschwelle; #6 zwei definierte Fertig-Zweige (colocate Nachbarn / non-colocate Output-Baum wie heute), gleicher expected_artifacts-Satz; #7 Review-Normalisierung bereits im Ziel-tmp vor Publish; #8 Restart-Vergleich der Review gegen normalisierte Erwartungs-Bytes; #9 Entscheidung: resumierbare Migration statt Ziel-Rollback, explizit dokumentiert + Report „fortgesetzt"; #10 Recovery läuft auch vor scan_pending/scan_library, nicht nur vor Schreibzugriffen.
 
-## Round 5 — Codex
-All six prior material findings are now addressed. The plan is sound enough to implement.
+## Round 5 — Codex (MAX_ROUNDS)
+Most prior findings are now addressed, but four material issues remain:
 
-One minor contradiction should be resolved during implementation: ffprobe is described as optional with a 600-second fallback, but later its absence/nonzero exit is said to raise `WaveformError` ([PLAN.md](/home/itiger013/Dokumente/Github/BoRT/PLAN.md:31), [PLAN.md](/home/itiger013/Dokumente/Github/BoRT/PLAN.md:33)). Treat ffprobe as best-effort with a short timeout; only ffmpeg failure should abort extraction. Consequently, the integration test should require only ffmpeg and separately test operation without ffprobe.
+1. **Crash recovery can destroy externally modified synced files:** The manifest records only `final_name` and `had_predecessor`; if Syncthing creates or changes a destination after the crash, recovery may delete it or overwrite it with `.bak`.  
+   Fix: Record staged and predecessor SHA-256 hashes; restore/delete only when the current destination matches the staged transaction content, otherwise preserve everything and report a manual recovery conflict.
 
-No new security, concurrency, schema, or rendering blocker remains.
+2. **Numbered migration families can become undiscoverable during source cleanup:** If `session_1.review.json` is deleted before its sibling source files and the process crashes, the remaining `_1` files no longer have a review linking them to `session.m4a`, and exact-stem fallback cannot resume them.  
+   Fix: Delete the source review last and add a crash-resume test for interruption after every individual source deletion.
 
-VERDICT: APPROVED
+3. **Migration verification still contradicts the algorithm:** The approach explicitly chooses resumable migration with no destination rollback, but Verification still requires “Fehler mitten im Move → Rollback.”  
+   Fix: Replace that test criterion with partial-publication resume tests and assert sources remain intact until the family is fully published.
+
+4. **Non-colocate completeness can combine unrelated generations:** Independent `rglob` matches could satisfy `.txt`, `.review.json`, and `.markers.json` from different dated directories.  
+   Fix: Require all expected artifacts to belong to one coherent directory/base-name family before declaring a non-colocate recording complete.
+
+Because recovery is destructive and the current manifest cannot distinguish transaction output from later synced data, the plan is not yet safe enough to implement unchanged.
+
+VERDICT: REVISE
 ### Claude's response (R5)
-Minor-Widerspruch behoben: ffprobe jetzt durchgängig best-effort (kurzer Timeout, Fallback fixe 600s-Deadline, kein Abbruch); nur ffmpeg-Fehlschlag bricht ab. Integrationstest skipif nur ffmpeg; ffprobe-los-Betrieb gemockt getestet.
+Alle vier akzeptiert und eingearbeitet: #1 Manifest trägt staged_sha256 + predecessor_sha256; Recovery restauriert/löscht nur inhaltsverifizierte eigene Artefakte, extern veränderte Ziele bleiben unangetastet → manueller Konflikt; #2 Quell-Review wird als letzte gelöscht (Resume-Anker für _1-Familien) + Crash-Resume-Tests nach jeder Löschung; #3 Verifikations-Widerspruch behoben (Resume-Tests statt Rollback-Kriterium); #4 Non-colocate-Vollständigkeit familienweise (kompletter Satz im selben Verzeichnis).
 
 ## Ergebnis
-VERDICT: APPROVED nach 5 Runden. Plan bereit für Act 3 (/codex-build) nach User-Freigabe.
+MAX_ROUNDS=5 erreicht ohne APPROVED-Verdikt. KEINE offenen Meinungsverschiedenheiten: alle 57 Findings aus 5 Runden wurden akzeptiert und eingearbeitet (einzige Teilablehnung: R1 #6 Completion-Metadatei, begründet). Die R5-Fixes sind nach der letzten Codex-Antwort eingepflegt, aber nicht mehr gegenreviewt. Entscheidung über Zusatzrunde oder Build liegt bei Matthias.
 
-## Act 3 — Build
+## Round 6 — Codex (Bestätigungsrunde)
+Fixes 2–4 are correctly and consistently integrated: review-last deletion anchors migration resume, verification now tests resume rather than rollback, and non-colocate completeness requires one coherent family.
 
-### Round 1 — Codex build (thread 019f9325-7022-7fa1-9040-748a96d3c0c3, gpt-5.6-sol)
-Implementierte PLAN.md vollständig: Nav-Reihenfolge + SVG-Icons (index.html), Neon-Dark-Theme mit Gradient-Cards (style.css), waveform.py (ffmpeg-Streaming, Re-bin, Watchdog, idempotente Terminierung), get_waveform-Bridge (LRU-Cache, Koaleszenz, racefreie Registry) in app.py, Waveform-Canvas mit Guards/Media-Fehlerpfad/DPR/ResizeObserver/Tastatur+ARIA (app.js), pure Logik in wave_math.js, drei neue Testsuiten. Proof laut Codex: 97 pytest + 7 node Tests grün.
+Fix 1 still contains a recovery contradiction. It says recovery mutates a target only when its current hash equals `staged_sha256`. That mishandles two normal incomplete-transaction states:
 
-### Claude's verdict (R1)
-Voller Diff gelesen, Proofs selbst ausgeführt (97 pytest, 7 node — grün). Ein Spec-Fidelity-Bug: Waveform-Labels stale nach „Anwenden" (renderSpeakers baut Inputs neu, ohne renderWaveformLabels).
+- Crash after backup but before publish: target is absent, so there is no staged hash, yet the valid backup must be restored.
+- Crash after manifest publication but before that member’s backup: target still matches `predecessor_sha256`; this should be a no-op, not a manual external-change conflict.
 
-### Round 2 — Codex fix (gleiche Session)
-renderWaveformLabels()-Aufruf am Ende von renderSpeakers(). Verifiziert: Diff korrekt platziert, Proofs erneut grün. Statische Sichtprüfung im Browser: Nav-Reihenfolge, Neon-Theme, Gradient-Borders, Icons OK.
+Fix: Define and test an explicit recovery truth table:
+
+- `had_predecessor`, target absent or staged, valid backup present → restore backup.
+- `had_predecessor`, target already matches predecessor, backup absent → no-op.
+- No predecessor, target absent → no-op.
+- No predecessor, target matches staged → delete.
+- Any other target/backup hash combination → preserve files and report manual conflict.
+
+VERDICT: REVISE
+### Claude's response (R6)
+Fixes 2–4 bestätigt. #1: Recovery-Wahrheitstabelle exakt wie vorgeschlagen übernommen (5 Zeilen, je ein Testfall) — die zwei legitimen Zwischenzustände (Backup vor Publish; Manifest vor Backup) sind jetzt No-op/Restore statt Fehlkonflikt.
+
+## Round 7 — Codex
+The recovery truth table matches the requested five cases exactly, resolves the prior absent/predecessor-state contradiction, and explicitly requires one test per row. Integration is consistent with the manifest hashes and manual-conflict behavior.
+
+VERDICT: APPROVED
+## Ergebnis
+VERDICT: APPROVED nach 7 Runden (5 regulär + 2 Bestätigung). 62 Findings, alle adressiert. Bereit für Act 3 (/codex-build) nach User-Freigabe.
