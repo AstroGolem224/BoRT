@@ -92,6 +92,11 @@
           <p id="library-summary" class="muted"></p>
         </div>
         <div id="library-items" class="library-items"><p class="empty-state">Noch nicht gescannt.</p></div>
+        <div class="card">
+          <h2><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m0 0-4-4m4 4 4-4M4 17v3h16v-3"/></svg>Export</h2>
+          <label>Export-Ordner<span class="picker"><input id="export-path" readonly><button id="pick-export" type="button">Auswählen</button><button id="open-export" type="button" title="Im Dateimanager öffnen">📂 Öffnen</button></span></label>
+          <div class="actions"><button id="export-selection" class="primary" type="button" disabled>Auswahl exportieren (0)</button></div>
+        </div>
       </section>
       <section id="batch" class="view" aria-labelledby="batch-title">
         <header><h1 id="batch-title">Batch</h1><p>Neue Aufnahmen aus einem Sync-Ordner nacheinander verarbeiten.</p></header>

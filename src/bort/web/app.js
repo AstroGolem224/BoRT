@@ -555,9 +555,17 @@
       context.stroke();
     });
   };
+  const librarySelection = new Set();
+  const updateExportButton = () => {
+    const button = $('export-selection');
+    button.textContent = `Auswahl exportieren (${librarySelection.size})`;
+    button.disabled = librarySelection.size === 0;
+  };
   const renderLibraryItems = (items) => {
     const target = $('library-items');
     target.textContent = '';
+    librarySelection.clear();
+    updateExportButton();
     if (!items.length) {
       const empty = document.createElement('p');
       empty.className = 'empty-state';
@@ -568,6 +576,17 @@
     items.forEach((item) => {
       const card = document.createElement('article');
       card.className = 'card library-card';
+      const select = document.createElement('input');
+      select.type = 'checkbox';
+      select.className = 'library-select';
+      const exportable = (item.formats_present || []).length > 0;
+      select.disabled = !exportable;
+      select.title = exportable ? 'Für Export auswählen' : 'Kein Transkript vorhanden';
+      select.addEventListener('change', () => {
+        if (select.checked) librarySelection.add(item.item_id);
+        else librarySelection.delete(item.item_id);
+        updateExportButton();
+      });
       const canvas = document.createElement('canvas');
       canvas.className = 'library-wave';
       const body = document.createElement('div');
@@ -624,7 +643,7 @@
         setStatus('Aufnahme aus der Bibliothek vorbereitet.');
       });
       actions.append(transcribe);
-      card.append(canvas, body, actions);
+      card.append(select, canvas, body, actions);
       target.append(card);
       requestAnimationFrame(() => renderMiniWave(canvas, item.peaks34 || []));
     });
@@ -905,6 +924,23 @@
   $('pick-library').addEventListener('click', async () => {
     const result = await api.pick_library_dir();
     if (result && result.ok) $('library-path').value = result.path || '';
+  });
+  $('pick-export').addEventListener('click', async () => {
+    const result = await api.pick_export_dir();
+    if (result && result.ok) $('export-path').value = result.path || '';
+  });
+  $('open-export').addEventListener('click', async () => {
+    const result = await api.open_export_dir();
+    if (result && !result.ok) setViewStatus('library-status', result.error || 'Ordner konnte nicht geöffnet werden.', true);
+  });
+  $('export-selection').addEventListener('click', async () => {
+    const result = await api.export_library_zip([...librarySelection]);
+    if (!result.ok) {
+      setViewStatus('library-status', result.error || 'Export fehlgeschlagen.', true);
+      return;
+    }
+    const skipped = result.skipped ? ` (${result.skipped} ohne Transkript übersprungen)` : '';
+    setViewStatus('library-status', `${result.file_count} Dateien exportiert nach ${result.zip_path}${skipped}.`);
   });
   $('scan-library').addEventListener('click', async () => {
     setViewStatus('library-status', 'Bibliothek wird gescannt …');

@@ -258,9 +258,9 @@ legend { color: var(--muted); font-size: 13px; padding: 0 0 4px; }
   color: var(--text);
   cursor: pointer;
 }
-.check input { appearance: none; width: 17px; height: 17px; padding: 0; border-radius: 4px; border: 1px solid var(--border); background: var(--bg-sink); margin-right: 8px; box-shadow: none; }
-.check input:checked { border-color: var(--accent); background: var(--accent); box-shadow: inset 0 0 0 3px var(--bg-sink), 0 0 9px var(--accent-glow); }
-.check input:focus { box-shadow: 0 0 0 2px var(--accent-glow); }
+.check input, .library-select { appearance: none; width: 17px; height: 17px; padding: 0; border-radius: 4px; border: 1px solid var(--border); background: var(--bg-sink); margin-right: 8px; box-shadow: none; }
+.check input:checked, .library-select:checked { border-color: var(--accent); background: var(--accent); box-shadow: inset 0 0 0 3px var(--bg-sink), 0 0 9px var(--accent-glow); }
+.check input:focus, .library-select:focus { box-shadow: 0 0 0 2px var(--accent-glow); }
 
 /* --- Aktion / Fortschritt --- */
 .run-card { display: grid; gap: 14px; }
@@ -485,7 +485,7 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .library-items { display: grid; gap: 16px; }
 .library-card {
   display: grid;
-  grid-template-columns: minmax(210px, 0.34fr) minmax(280px, 1fr) auto;
+  grid-template-columns: auto minmax(210px, 0.34fr) minmax(280px, 1fr) auto;
   align-items: center;
   gap: 22px;
   margin: 0;
@@ -530,3 +530,6 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   .library-card { grid-template-columns: 1fr; }
   .library-actions { justify-content: flex-end; }
 }
+
+.library-select { width: 19px; height: 19px; margin: 0; cursor: pointer; }
+.library-select:disabled { opacity: 0.35; cursor: not-allowed; }

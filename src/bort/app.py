@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import heapq
 import json
+import os
 import subprocess
 import sys
 import threading
 import uuid
+import zipfile
 from collections import OrderedDict, deque
 from concurrent.futures import Future
+from datetime import datetime
 from importlib import resources
 from pathlib import Path
 from typing import Any
@@ -117,6 +120,7 @@ class Bridge:
             "review": self.config.get_path("last_review_path"),
             "library": self.config.get_path("last_library_dir")
             or self.config.get_path("last_watch_dir"),
+            "export": self.config.get_path("last_export_dir"),
         }
 
     def __dir__(self) -> list[str]:
@@ -656,6 +660,78 @@ class Bridge:
             "ok": True,
             "audio_path": str(audio),
             "marker_path": str(marker) if marker else "",
+        }
+
+    def pick_export_dir(self) -> dict[str, Any]:
+        chosen = self._dialog(webview.FOLDER_DIALOG, "Export-Ordner auswählen", (), "export")
+        result = self._record_path("export", chosen, must_be_directory=True)
+        if result.get("ok"):
+            path = Path(result["path"])
+            self.controller.update_config(
+                self.config,
+                lambda: self._save_config_path("last_export_dir", path),
+            )
+        return result
+
+    def open_export_dir(self) -> dict[str, Any]:
+        """Öffnet den Export-Ordner im System-Dateimanager."""
+        with self._state_lock:
+            export_dir = self._paths.get("export")
+        if export_dir is None or not export_dir.is_dir():
+            return {"ok": False, "error": "Kein gültiger Export-Ordner ausgewählt."}
+        try:
+            subprocess.Popen(["xdg-open", str(export_dir)])
+        except OSError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True}
+
+    def export_library_zip(self, item_ids: Any) -> dict[str, Any]:
+        """Packt die Transkripte der gewählten Bibliothekseinträge in ein Zip."""
+        if not isinstance(item_ids, list) or not all(
+            isinstance(item, str) for item in item_ids
+        ) or not item_ids:
+            return {"ok": False, "error": "Keine Auswahl."}
+        with self._state_lock:
+            export_dir = self._paths.get("export")
+        if export_dir is None or not export_dir.is_dir():
+            return {"ok": False, "error": "Bitte zuerst einen Export-Ordner auswählen."}
+        try:
+            audios = [self._library_audio(item_id) for item_id in item_ids]
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        files: list[tuple[Path, str]] = []
+        skipped = 0
+        for audio in audios:
+            transcripts = [
+                candidate for suffix, _writer in FORMATS.values()
+                if (candidate := audio.with_name(audio.stem + suffix)).is_file()
+            ]
+            if not transcripts:
+                skipped += 1
+                continue
+            files.extend(
+                # Tagesordner-Struktur im Zip beibehalten -> keine Namenskollisionen.
+                (candidate, f"{audio.parent.name}/{candidate.name}")
+                for candidate in transcripts
+            )
+        if not files:
+            return {"ok": False, "error": "Die Auswahl enthält keine Transkripte."}
+        zip_name = f"BoR_Transkripte_{datetime.now():%Y-%m-%d_%H-%M-%S}.zip"
+        zip_path = export_dir / zip_name
+        tmp_path = export_dir / f"{zip_name}.{uuid.uuid4().hex}.tmp"
+        try:
+            with zipfile.ZipFile(tmp_path, "w", zipfile.ZIP_DEFLATED) as archive:
+                for source, arcname in files:
+                    archive.write(source, arcname)
+            os.replace(tmp_path, zip_path)
+        except OSError as exc:
+            tmp_path.unlink(missing_ok=True)
+            return {"ok": False, "error": f"Zip konnte nicht geschrieben werden: {exc}"}
+        return {
+            "ok": True,
+            "zip_path": str(zip_path),
+            "file_count": len(files),
+            "skipped": skipped,
         }
 
     @staticmethod
