@@ -40,6 +40,86 @@ class RenameResult:
     markers: list[SpeakerMarker]
 
 
+# Nachbar-Artefakte einer Aufnahme (Reihenfolge egal; ".json" ist die BoR-Sidecar).
+_FAMILY_SUFFIXES = (".txt", ".md", ".csv", ".tsv", ".review.json", ".markers.json", ".json")
+
+
+def _validate_base(new_base: str) -> str:
+    new_base = new_base.strip()
+    if not new_base or "/" in new_base or "\\" in new_base or new_base in {".", ".."}:
+        raise SpeakerEditError("Ungültiger Dateiname.")
+    return new_base
+
+
+def _rename_with_rollback(pairs: list[tuple[Path, Path]]) -> None:
+    for _src, dst in pairs:
+        if dst.exists():
+            raise SpeakerEditError(f"Zieldatei existiert bereits: {dst.name}")
+    renamed: list[tuple[Path, Path]] = []
+    try:
+        for src, dst in pairs:
+            if not src.exists():
+                continue
+            src.rename(dst)
+            renamed.append((src, dst))
+    except OSError as exc:
+        for src, dst in reversed(renamed):
+            try:
+                dst.rename(src)
+            except OSError:
+                pass
+        raise SpeakerEditError(f"Umbenennen fehlgeschlagen: {exc}") from exc
+
+
+def _patch_json(path: Path, updates: dict[str, str], *, strict: bool) -> None:
+    """Aktualisiert Felder in einer JSON-Datei; bei strict=False best-effort."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("Wurzel ist kein Objekt")
+        data.update(updates)
+        path.write_text(
+            json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except (OSError, ValueError) as exc:
+        if strict:
+            raise SpeakerEditError(
+                f"JSON konnte nicht aktualisiert werden: {exc}"
+            ) from exc
+
+
+def rename_recording_family(audio_path: Path, new_base: str) -> Path:
+    """Benennt eine Aufnahme samt aller Nachbar-Artefakte um.
+
+    Erfasst Audio, Transkripte, Review-, Marker- und BoR-Sidecar-Dateien im selben
+    Ordner. Die BoR-Sidecar wird mit umbenannt und ihr ``file``-Feld nachgezogen,
+    damit BoRTs eigener Peaks-Reader gepaart bleibt (BoR-Android-Konsistenz ist
+    bewusst außen vor).
+    """
+    new_base = _validate_base(new_base)
+    if new_base == audio_path.stem:
+        return audio_path
+    new_audio = audio_path.with_name(new_base + audio_path.suffix)
+    pairs: list[tuple[Path, Path]] = [(audio_path, new_audio)]
+    for suffix in _FAMILY_SUFFIXES:
+        src = audio_path.with_name(audio_path.stem + suffix)
+        if src.exists():
+            pairs.append((src, audio_path.with_name(new_base + suffix)))
+    _rename_with_rollback(pairs)
+
+    new_review = audio_path.with_name(f"{new_base}.review.json")
+    if new_review.is_file():
+        _patch_json(
+            new_review,
+            {"base_name": new_base, "audio_path": str(new_audio)},
+            strict=True,
+        )
+    new_sidecar = audio_path.with_name(f"{new_base}.json")
+    if new_sidecar.is_file():
+        _patch_json(new_sidecar, {"file": new_audio.name}, strict=False)
+    return new_audio
+
+
 class SpeakerEditController:
     """Hält validierte Review-Daten hinter opaken IDs."""
 
@@ -65,9 +145,7 @@ class SpeakerEditController:
     def rename_base(self, review_id: str, new_base: str) -> RegisteredReview:
         """Benennt die komplette Dateifamilie (Review-JSON, Outputs, Audio) um."""
         review = self.get(review_id)
-        new_base = new_base.strip()
-        if not new_base or "/" in new_base or "\\" in new_base or new_base in {".", ".."}:
-            raise SpeakerEditError("Ungültiger Dateiname.")
+        new_base = _validate_base(new_base)
         if new_base == review.base_name:
             return review
 
@@ -85,38 +163,25 @@ class SpeakerEditController:
                     review.output_dir / f"{new_base}{suffix}",
                 )
             )
+        # BoR-Sidecar + Auto-Marker neben dem Audio ziehen mit um (Paarung).
+        for suffix in (".json", ".markers.json"):
+            src = review.audio_path.with_name(review.audio_path.stem + suffix)
+            if src.exists():
+                pairs.append((src, review.audio_path.with_name(new_base + suffix)))
         pairs.append((review.audio_path, new_audio))
         pairs = [(src, dst) for src, dst in pairs if src != dst]
+        # Duplikate vermeiden (colocate: output_dir == Audio-Ordner).
+        pairs = list(dict.fromkeys(pairs))
 
-        for _src, dst in pairs:
-            if dst.exists():
-                raise SpeakerEditError(f"Zieldatei existiert bereits: {dst.name}")
-        renamed: list[tuple[Path, Path]] = []
-        try:
-            for src, dst in pairs:
-                if not src.exists():
-                    continue
-                src.rename(dst)
-                renamed.append((src, dst))
-        except OSError as exc:
-            for src, dst in reversed(renamed):
-                try:
-                    dst.rename(src)
-                except OSError:
-                    pass
-            raise SpeakerEditError(f"Umbenennen fehlgeschlagen: {exc}") from exc
-
-        try:
-            data = json.loads(new_json.read_text(encoding="utf-8"))
-            data["base_name"] = new_base
-            data["audio_path"] = str(new_audio)
-            new_json.write_text(
-                json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-            )
-        except (OSError, ValueError) as exc:
-            raise SpeakerEditError(
-                f"Review-JSON konnte nicht aktualisiert werden: {exc}"
-            ) from exc
+        _rename_with_rollback(pairs)
+        _patch_json(
+            new_json,
+            {"base_name": new_base, "audio_path": str(new_audio)},
+            strict=True,
+        )
+        new_sidecar = review.audio_path.with_name(f"{new_base}.json")
+        if new_sidecar.is_file():
+            _patch_json(new_sidecar, {"file": new_audio.name}, strict=False)
 
         review.base_name = new_base
         review.audio_path = new_audio

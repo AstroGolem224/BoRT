@@ -556,14 +556,54 @@
     });
   };
   const librarySelection = new Set();
+  let mailPasswordStored = false;
+  // Ein geteilter Player für alle Bibliothekskarten; es spielt immer nur eine.
+  let libraryActive = null; // { itemId, playButton, playhead, waveWrap }
+  const libraryAudioEl = () => $('library-audio');
+  const libraryStop = () => {
+    const audio = libraryAudioEl();
+    audio.pause();
+    if (libraryActive) {
+      libraryActive.playButton.textContent = '▶';
+      libraryActive.playhead.hidden = true;
+      libraryActive = null;
+    }
+    audio.removeAttribute('src');
+    audio.load();
+  };
+  const libraryActivate = (item, controls) => {
+    if (libraryActive && libraryActive.itemId !== item.item_id) libraryStop();
+    const audio = libraryAudioEl();
+    if (!audio.src || libraryActive === null) {
+      audio.src = item.audio_url;
+      libraryActive = { itemId: item.item_id, ...controls };
+      libraryActive.playhead.hidden = false;
+    }
+    return audio;
+  };
   const updateExportButton = () => {
+    const count = librarySelection.size;
     const button = $('export-selection');
-    button.textContent = `Auswahl exportieren (${librarySelection.size})`;
-    button.disabled = librarySelection.size === 0;
+    button.textContent = `Auswahl exportieren (${count})`;
+    button.disabled = count === 0;
+    const send = $('export-send');
+    send.textContent = `Exportieren & senden (${count})`;
+    send.disabled = count === 0;
+  };
+  const updateMailPasswordRow = () => {
+    $('mail-password-row').hidden = mailPasswordStored;
+  };
+  const applyMailState = (state) => {
+    if (!state || !state.ok) return;
+    if (state.recipient && !$('mail-to').value) $('mail-to').value = state.recipient;
+    if (state.sender && !$('mail-from').value) $('mail-from').value = state.sender;
+    mailPasswordStored = Boolean(state.has_password);
+    updateMailPasswordRow();
   };
   const renderLibraryItems = (items) => {
     const target = $('library-items');
     target.textContent = '';
+    libraryStop();
     librarySelection.clear();
     updateExportButton();
     if (!items.length) {
@@ -587,12 +627,94 @@
         else librarySelection.delete(item.item_id);
         updateExportButton();
       });
+      const playButton = document.createElement('button');
+      playButton.type = 'button';
+      playButton.className = 'library-play';
+      playButton.title = 'Anhören';
+      playButton.textContent = '▶';
+      const waveWrap = document.createElement('div');
+      waveWrap.className = 'library-wave-wrap';
       const canvas = document.createElement('canvas');
       canvas.className = 'library-wave';
+      const playhead = document.createElement('div');
+      playhead.className = 'library-playhead';
+      playhead.hidden = true;
+      waveWrap.append(canvas, playhead);
+      const controls = { playButton, playhead, waveWrap };
+      playButton.addEventListener('click', () => {
+        const audio = libraryActivate(item, controls);
+        if (audio.paused) audio.play().catch(() => {}); else audio.pause();
+      });
+      const seekFromPointer = (event) => {
+        const audio = libraryAudioEl();
+        const rect = waveWrap.getBoundingClientRect();
+        if (!rect.width || !Number.isFinite(audio.duration) || audio.duration <= 0) return;
+        const frac = Math.max(0, Math.min(1, (event.clientX - rect.left) / rect.width));
+        audio.currentTime = frac * audio.duration;
+        playhead.style.left = `${frac * 100}%`;
+      };
+      waveWrap.addEventListener('pointerdown', (event) => {
+        const audio = libraryActivate(item, controls);
+        // play() synchron in der Geste (WebKitGTK-Autoplay-Policy).
+        if (audio.paused) audio.play().catch(() => {});
+        if (audio.readyState >= 1) seekFromPointer(event);
+        else audio.addEventListener('loadedmetadata', () => seekFromPointer(event), { once: true });
+        waveWrap.setPointerCapture(event.pointerId);
+        const move = (moveEvent) => seekFromPointer(moveEvent);
+        const up = () => {
+          waveWrap.removeEventListener('pointermove', move);
+          waveWrap.removeEventListener('pointerup', up);
+          waveWrap.removeEventListener('pointercancel', up);
+        };
+        waveWrap.addEventListener('pointermove', move);
+        waveWrap.addEventListener('pointerup', up);
+        waveWrap.addEventListener('pointercancel', up);
+      });
       const body = document.createElement('div');
       body.className = 'library-body';
+      const titleRow = document.createElement('div');
+      titleRow.className = 'library-title';
       const title = document.createElement('strong');
       title.textContent = item.name;
+      const renameButton = document.createElement('button');
+      renameButton.type = 'button';
+      renameButton.className = 'library-rename';
+      renameButton.title = 'Umbenennen';
+      renameButton.textContent = '✏️';
+      renameButton.addEventListener('click', () => {
+        const stem = item.name.replace(/\.[^.]+$/, '');
+        const editor = document.createElement('input');
+        editor.type = 'text';
+        editor.value = stem;
+        editor.className = 'library-rename-input';
+        titleRow.replaceChildren(editor);
+        editor.focus();
+        editor.select();
+        let done = false;
+        const finish = async (commit) => {
+          if (done) return;
+          done = true;
+          const value = editor.value.trim();
+          if (!commit || !value || value === stem) {
+            titleRow.replaceChildren(title, renameButton);
+            return;
+          }
+          const result = await api.rename_library_item(item.item_id, value);
+          if (!result.ok) {
+            setViewStatus('library-status', result.error || 'Umbenennen fehlgeschlagen.', true);
+            titleRow.replaceChildren(title, renameButton);
+            return;
+          }
+          setViewStatus('library-status', `Umbenannt zu „${result.name}". Liste wird aktualisiert …`);
+          $('scan-library').click();
+        };
+        editor.addEventListener('keydown', (event) => {
+          if (event.key === 'Enter') finish(true);
+          if (event.key === 'Escape') finish(false);
+        });
+        editor.addEventListener('blur', () => finish(true));
+      });
+      titleRow.append(title, renameButton);
       const detail = document.createElement('span');
       const date = item.started_at ? new Date(item.started_at).toLocaleString('de-DE') : 'Datum unbekannt';
       detail.textContent = `${date} · ${formatTime((Number(item.duration_ms) || 0) / 1000)} · ${item.folder}`;
@@ -609,7 +731,7 @@
       const markerBadge = document.createElement('span');
       markerBadge.textContent = `⚑ ${item.marker_count || 0} Marker`;
       badges.append(markerBadge);
-      body.append(title, detail, badges);
+      body.append(titleRow, detail, badges);
       const actions = document.createElement('div');
       actions.className = 'library-actions';
       if (item.has_review) {
@@ -643,7 +765,7 @@
         setStatus('Aufnahme aus der Bibliothek vorbereitet.');
       });
       actions.append(transcribe);
-      card.append(select, canvas, body, actions);
+      card.append(select, playButton, waveWrap, body, actions);
       target.append(card);
       requestAnimationFrame(() => renderMiniWave(canvas, item.peaks34 || []));
     });
@@ -713,6 +835,9 @@
     const current = document.querySelector('.view.active');
     if (current && current.id === 'speakers' && button.dataset.view !== 'speakers' && api) {
       await api.stop_playback();
+    }
+    if (current && current.id === 'library' && button.dataset.view !== 'library') {
+      libraryStop();
     }
     document.querySelectorAll('.nav-item').forEach((item) => item.classList.toggle('active', item === button));
     document.querySelectorAll('.view').forEach((view) => view.classList.toggle('active', view.id === button.dataset.view));
@@ -833,6 +958,23 @@
     audio.currentTime = 0;
     setViewStatus('speaker-status', 'Wiedergabe gestoppt.');
   });
+  // Bibliotheks-Player-Verdrahtung (einmalig)
+  (() => {
+    const audio = libraryAudioEl();
+    audio.addEventListener('timeupdate', () => {
+      if (!libraryActive || !Number.isFinite(audio.duration) || audio.duration <= 0) return;
+      libraryActive.playhead.style.left = `${(audio.currentTime / audio.duration) * 100}%`;
+    });
+    audio.addEventListener('play', () => { if (libraryActive) libraryActive.playButton.textContent = '⏸'; });
+    audio.addEventListener('pause', () => { if (libraryActive) libraryActive.playButton.textContent = '▶'; });
+    audio.addEventListener('ended', () => { if (libraryActive) libraryActive.playButton.textContent = '▶'; });
+    audio.addEventListener('error', () => {
+      if (!audio.src) return;
+      setViewStatus('library-status', 'Dieses Audioformat kann nicht abgespielt werden.', true);
+      libraryStop();
+    });
+  })();
+
   // Audio-Player-Verdrahtung (einmalig)
   (() => {
     const audio = audioEl();
@@ -925,6 +1067,14 @@
     const result = await api.pick_library_dir();
     if (result && result.ok) $('library-path').value = result.path || '';
   });
+  $('library-stop').addEventListener('click', async () => {
+    // Stoppt ALLES: Bibliotheks-Player, Sprecher-Audio und Backend-Player.
+    libraryStop();
+    const speakerAudio = audioEl();
+    speakerAudio.pause();
+    if (api) await api.stop_playback();
+    setViewStatus('library-status', 'Alle Wiedergaben gestoppt.');
+  });
   $('pick-export').addEventListener('click', async () => {
     const result = await api.pick_export_dir();
     if (result && result.ok) $('export-path').value = result.path || '';
@@ -941,6 +1091,40 @@
     }
     const skipped = result.skipped ? ` (${result.skipped} ohne Transkript übersprungen)` : '';
     setViewStatus('library-status', `${result.file_count} Dateien exportiert nach ${result.zip_path}${skipped}.`);
+  });
+  $('save-mail-password').addEventListener('click', async () => {
+    const sender = $('mail-from').value.trim();
+    const password = $('mail-password').value;
+    const result = await api.save_mail_password(sender, password);
+    if (!result.ok) {
+      setViewStatus('library-status', result.error || 'Passwort konnte nicht gespeichert werden.', true);
+      return;
+    }
+    $('mail-password').value = '';
+    mailPasswordStored = true;
+    updateMailPasswordRow();
+    setViewStatus('library-status', 'App-Passwort im Schlüsselbund gespeichert.');
+  });
+  $('export-send').addEventListener('click', async () => {
+    const recipient = $('mail-to').value.trim();
+    const sender = $('mail-from').value.trim();
+    const button = $('export-send');
+    button.disabled = true;
+    setViewStatus('library-status', 'Export läuft, Mail wird gesendet …');
+    try {
+      const result = await api.export_and_send([...librarySelection], recipient, sender);
+      if (!result.ok) {
+        if (result.needs_password) {
+          mailPasswordStored = false;
+          updateMailPasswordRow();
+        }
+        setViewStatus('library-status', result.error || 'Versand fehlgeschlagen.', true);
+        return;
+      }
+      setViewStatus('library-status', `${result.file_count} Dateien an ${result.recipient} gesendet (Zip: ${result.zip_path}).`);
+    } finally {
+      button.disabled = librarySelection.size === 0;
+    }
   });
   $('scan-library').addEventListener('click', async () => {
     setViewStatus('library-status', 'Bibliothek wird gescannt …');
@@ -988,6 +1172,7 @@
           try { localStorage.setItem('bort-theme', currentTheme); } catch (_) { /* egal */ }
         }
         applyInitialState(initial);
+        api.get_mail_state().then(applyMailState).catch(() => {});
       } else {
         setStatus(initial.error || 'Initialisierung fehlgeschlagen.', true);
       }

@@ -67,3 +67,80 @@ def test_rename_base_rejects_path_separators(tmp_path: Path) -> None:
     controller, review_id, _root = _make_review(tmp_path)
     with pytest.raises(SpeakerEditError, match="Ungültiger Dateiname"):
         controller.rename_base(review_id, "../boese")
+
+
+def test_rename_recording_family_renames_neighbors_and_patches_json(tmp_path):
+    import json
+
+    from bort.controller.speaker_edit import (
+        SpeakerEditError,
+        rename_recording_family,
+    )
+
+    audio = tmp_path / "alt.m4a"
+    audio.write_bytes(b"a")
+    (tmp_path / "alt.txt").write_text("t", encoding="utf-8")
+    (tmp_path / "alt.review.json").write_text(
+        json.dumps({"base_name": "alt", "audio_path": str(audio)}), encoding="utf-8"
+    )
+    (tmp_path / "alt.json").write_text(
+        json.dumps({"version": 1, "file": "alt.m4a"}), encoding="utf-8"
+    )
+
+    new_audio = rename_recording_family(audio, "neu")
+    assert new_audio == tmp_path / "neu.m4a"
+    assert not audio.exists()
+    assert (tmp_path / "neu.txt").is_file()
+    review = json.loads((tmp_path / "neu.review.json").read_text(encoding="utf-8"))
+    assert review["base_name"] == "neu"
+    assert review["audio_path"] == str(new_audio)
+    sidecar = json.loads((tmp_path / "neu.json").read_text(encoding="utf-8"))
+    assert sidecar["file"] == "neu.m4a"
+
+    # Kollision: Ziel existiert -> Fehler, nichts umbenannt.
+    (tmp_path / "besetzt.txt").write_text("x", encoding="utf-8")
+    import pytest
+
+    with pytest.raises(SpeakerEditError):
+        rename_recording_family(new_audio, "besetzt")
+    assert (tmp_path / "neu.m4a").is_file()
+
+
+def test_rename_review_allows_bor_paired_recordings(tmp_path):
+    import json
+
+    from bort.app import Bridge
+    from bort.config import Config
+
+    audio = tmp_path / "clip.m4a"
+    audio.write_bytes(b"a")
+    (tmp_path / "clip.json").write_text(
+        json.dumps({"version": 1, "file": "clip.m4a"}), encoding="utf-8"
+    )
+    review_path = tmp_path / "clip.review.json"
+    review_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "audio_path": str(audio),
+                "segments": [],
+                "speaker_map": {},
+                "markers": [],
+                "bookmarks": [],
+                "base_name": "clip",
+                "formats": ["txt"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "clip.txt").write_text("t", encoding="utf-8")
+
+    bridge = Bridge(config=Config(path=tmp_path / "settings.json"))
+    loaded = bridge._register_review_from_path(review_path)
+    assert loaded["ok"] and loaded["rename_allowed"] is True
+    result = bridge.rename_review(loaded["review_id"], "meeting_x")
+    assert result["ok"], result
+    assert (tmp_path / "meeting_x.m4a").is_file()
+    assert (tmp_path / "meeting_x.json").is_file()
+    sidecar = json.loads((tmp_path / "meeting_x.json").read_text(encoding="utf-8"))
+    assert sidecar["file"] == "meeting_x.m4a"

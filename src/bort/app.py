@@ -34,7 +34,9 @@ from .controller.speaker_edit import (
     RegisteredReview,
     SpeakerEditController,
     SpeakerEditError,
+    rename_recording_family,
 )
+from .mailer import MailError, is_valid_address, load_app_password, send_zip, store_app_password
 from .sidecar import read_recording_meta, resample_peaks
 from .speaker_review import ReviewError, load_review
 from .speakers import SpeakerSegment
@@ -285,9 +287,7 @@ class Bridge:
             "bookmarks": bookmarks,
             "sidecar_peaks": meta.peaks if meta else [],
             "sidecar_duration_ms": meta.duration_ms if meta else 0,
-            "rename_allowed": not review.audio_path.with_name(
-                f"{review.audio_path.stem}.json"
-            ).exists(),
+            "rename_allowed": True,
         }
 
     def _register_waveform_process(
@@ -450,12 +450,6 @@ class Bridge:
             return {"ok": False, "error": "Ungültige Eingabe."}
         try:
             with self._state_lock:
-                current = self.speaker_controller.get(review_id)
-                if current.audio_path.with_name(f"{current.audio_path.stem}.json").exists():
-                    raise SpeakerEditError(
-                        "BoR-Aufnahmen können nicht umbenannt werden, weil ihre Sidecar-Paarung "
-                        "erhalten bleiben muss."
-                    )
                 review = self.speaker_controller.rename_base(review_id, new_base)
                 new_path = review.review_path
                 if new_path is not None:
@@ -588,6 +582,10 @@ class Bridge:
                     "peaks34": resample_peaks(meta.peaks, 34) if meta else [],
                     "formats_present": formats,
                     "has_review": audio.with_name(f"{audio.stem}.review.json").is_file(),
+                    # file://-URI direkt mitliefern: play() muss synchron in der
+                    # Klick-Geste laufen (WebKitGTK-Autoplay-Policy), ein
+                    # Bridge-Roundtrip dazwischen würde die Geste verlieren.
+                    "audio_url": audio.as_uri(),
                 }
                 candidates.append(((epoch, audio.name), item, audio.resolve()))
             if truncated:
@@ -716,7 +714,7 @@ class Bridge:
             )
         if not files:
             return {"ok": False, "error": "Die Auswahl enthält keine Transkripte."}
-        zip_name = f"BoR_Transkripte_{datetime.now():%Y-%m-%d_%H-%M-%S}.zip"
+        zip_name = f"BoR_Minutes_{datetime.now():%Y-%m-%d_%H-%M-%S}.zip"
         zip_path = export_dir / zip_name
         tmp_path = export_dir / f"{zip_name}.{uuid.uuid4().hex}.tmp"
         try:
@@ -733,6 +731,77 @@ class Bridge:
             "file_count": len(files),
             "skipped": skipped,
         }
+
+    def rename_library_item(self, item_id: Any, new_base: Any) -> dict[str, Any]:
+        """Benennt eine Aufnahme samt Familie direkt aus der Bibliothek um."""
+        if not isinstance(new_base, str):
+            return {"ok": False, "error": "Ungültige Eingabe."}
+        try:
+            audio = self._library_audio(item_id)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        try:
+            new_audio = rename_recording_family(audio, new_base)
+        except SpeakerEditError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "name": new_audio.name}
+
+    def get_mail_state(self) -> dict[str, Any]:
+        """Liefert gemerkte Mail-Adressen und ob ein App-Passwort hinterlegt ist."""
+        sender = str(self.config.get("last_email_from", ""))
+        return {
+            "ok": True,
+            "sender": sender,
+            "recipient": str(self.config.get("last_email_to", "")),
+            "has_password": bool(sender and load_app_password(sender)),
+        }
+
+    def save_mail_password(self, sender: Any, password: Any) -> dict[str, Any]:
+        """Speichert das Gmail-App-Passwort im System-Schlüsselbund."""
+        if not isinstance(sender, str) or not isinstance(password, str):
+            return {"ok": False, "error": "Ungültige Eingabe."}
+        try:
+            store_app_password(sender, password)
+        except MailError as exc:
+            return {"ok": False, "error": str(exc)}
+        self.controller.update_config(
+            self.config, lambda: self.config.set("last_email_from", sender.strip())
+        )
+        return {"ok": True}
+
+    def export_and_send(
+        self, item_ids: Any, recipient: Any, sender: Any
+    ) -> dict[str, Any]:
+        """Exportiert die Auswahl als Zip und verschickt sie per Gmail-SMTP."""
+        if not isinstance(recipient, str) or not isinstance(sender, str):
+            return {"ok": False, "error": "Ungültige Eingabe."}
+        if not is_valid_address(recipient):
+            return {"ok": False, "error": "Ungültige Empfänger-Adresse."}
+        if not is_valid_address(sender):
+            return {"ok": False, "error": "Ungültige Absender-Adresse."}
+        password = load_app_password(sender)
+        if not password:
+            return {
+                "ok": False,
+                "error": "Kein App-Passwort hinterlegt. Bitte zuerst speichern.",
+                "needs_password": True,
+            }
+        exported = self.export_library_zip(item_ids)
+        if not exported.get("ok"):
+            return exported
+        try:
+            send_zip(sender, password, recipient, Path(exported["zip_path"]))
+        except MailError as exc:
+            exported.update({"ok": False, "error": str(exc), "sent": False})
+            return exported
+
+        def save() -> None:
+            self.config.set("last_email_to", recipient.strip())
+            self.config.set("last_email_from", sender.strip())
+
+        self.controller.update_config(self.config, save)
+        exported.update({"sent": True, "recipient": recipient.strip()})
+        return exported
 
     @staticmethod
     def _settings_fingerprint(raw: dict[str, Any]) -> tuple[Any, ...]:
