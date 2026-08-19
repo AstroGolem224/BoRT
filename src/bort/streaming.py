@@ -19,6 +19,7 @@ import logging
 import os
 import select
 import subprocess
+from collections.abc import Mapping
 from typing import Callable
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,7 @@ def run_stream_progress(
     cmd: list[str],
     *,
     on_line: Callable[[str], None] | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> tuple[str, str]:
     """Führt ``cmd`` aus, streamt stderr und ruft ``on_line`` pro Zeile auf.
 
@@ -38,6 +40,7 @@ def run_stream_progress(
         cmd: Kommandoliste.
         on_line: Callback, das jede fertige stderr-Zeile (stripped) erhält.
             Darf ``None`` sein.
+        env: Optionale Prozessumgebung. Wird unverändert an ``Popen`` gegeben.
 
     Returns:
         Tuple (stdout_text, stderr_text).
@@ -52,6 +55,7 @@ def run_stream_progress(
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         bufsize=0,
+        env=env,
     ) as proc:
         assert proc.stdout is not None
         assert proc.stderr is not None

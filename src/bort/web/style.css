@@ -352,6 +352,11 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 .speaker-id { color: var(--accent); font-weight: 600; white-space: nowrap; font-size: 13px; }
 .speaker-edit-row input { min-width: 0; }
+.speaker-suggestion { grid-column: 2 / -1; justify-self: start; font-size: 12px; }
+.sensitive-label { color: #f59e0b; font-size: 11px; margin-left: 4px; }
+.voice-catalog-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.voice-profile-chip { display: inline-flex; align-items: center; gap: 7px; padding: 6px 8px 6px 12px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); font-size: 12px; }
+.voice-profile-delete { min-width: 25px; padding: 2px 7px !important; border-radius: 50%; }
 
 /* Sprecher-Ansicht: links Editor, rechts live-Transkript. */
 .speaker-layout {

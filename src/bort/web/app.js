@@ -14,6 +14,7 @@
   let waveCache = null;
   let activeBatchId = null;
   let pendingBatchItems = [];
+  let voiceCatalogNames = [];
 
   // Theme (hell/dunkel) – rein clientseitig via localStorage, Default dunkel.
   const applyTheme = (theme) => {
@@ -75,11 +76,17 @@
     const el = $(`${kind}-path`);
     if (el) el.value = path || '';
   };
+  const toggleVoiceProfiles = () => {
+    const disabled = $('no-diarize').checked || $('backend').value !== 'whisperx';
+    $('voice-profiles').disabled = disabled;
+    if (disabled) $('voice-profiles').checked = false;
+  };
   const toggleBackend = () => {
     const whisperx = $('backend').value === 'whisperx';
     $('whispercpp-options').hidden = whisperx;
     $('whisperx-options').hidden = !whisperx;
     $('diarize-options').hidden = !whisperx;
+    toggleVoiceProfiles();
   };
   const selectedFormats = () => [...document.querySelectorAll('input[name="format"]:checked')].map((item) => item.value);
   const formSettings = () => ({
@@ -88,7 +95,7 @@
     max_speakers: $('max-speakers').value, formats: selectedFormats(),
     keep_wav: $('keep-wav').checked, verbose: $('verbose').checked,
     no_diarize: $('no-diarize').checked, auto_markers: $('auto-markers').checked,
-    colocate: $('colocate').checked,
+    colocate: $('colocate').checked, voice_profiles: $('voice-profiles').checked,
   });
   const toggleColocate = () => {
     const active = $('colocate').checked;
@@ -102,7 +109,7 @@
       .forEach(([key, id]) => { if (settings[key]) $(id).value = settings[key]; });
     [['min_speakers', 'min-speakers'], ['max_speakers', 'max-speakers']]
       .forEach(([key, id]) => { if (settings[key]) $(id).value = settings[key]; });
-    [['keep_wav', 'keep-wav'], ['verbose', 'verbose'], ['no_diarize', 'no-diarize'], ['auto_markers', 'auto-markers'], ['colocate', 'colocate']]
+    [['keep_wav', 'keep-wav'], ['verbose', 'verbose'], ['no_diarize', 'no-diarize'], ['auto_markers', 'auto-markers'], ['colocate', 'colocate'], ['voice_profiles', 'voice-profiles']]
       .forEach(([key, id]) => { if (typeof settings[key] === 'boolean') $(id).checked = settings[key]; });
     if (Array.isArray(settings.formats)) {
       document.querySelectorAll('input[name="format"]').forEach((item) => {
@@ -111,6 +118,58 @@
     }
     toggleBackend();
     toggleColocate();
+    applyVoiceCatalog(state.voice_catalog || {});
+  };
+  const applyVoiceCatalog = (catalog) => {
+    voiceCatalogNames = Array.isArray(catalog.names) ? catalog.names : [];
+    const profiles = Array.isArray(catalog.profiles) ? catalog.profiles : [];
+    const target = $('voice-profile-names');
+    target.textContent = '';
+    voiceCatalogNames.forEach((name) => {
+      const option = document.createElement('option');
+      option.value = name;
+      target.append(option);
+    });
+    const status = $('voice-catalog-status');
+    if (catalog.available === false) {
+      status.textContent = catalog.error || 'Lokaler Namenskatalog ist nicht verfügbar.';
+      status.classList.add('error');
+      $('remember-speakers').disabled = true;
+      return;
+    }
+    status.classList.remove('error');
+    $('remember-speakers').disabled = false;
+    status.textContent = voiceCatalogNames.length
+      ? `${voiceCatalogNames.length} lokale Namen als Vorschläge verfügbar.`
+      : 'Noch keine Namen gespeichert. Stimmabdrücke werden nur nach ausdrücklicher Aktivierung ergänzt.';
+    const profileList = $('voice-catalog-list');
+    profileList.textContent = '';
+    profiles.forEach((profile) => {
+      const chip = document.createElement('span');
+      chip.className = 'voice-profile-chip';
+      const label = document.createElement('span');
+      label.textContent = profile.has_voiceprint
+        ? `${profile.name} · Stimme ×${profile.sample_count}`
+        : `${profile.name} · nur Name`;
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'voice-profile-delete';
+      remove.textContent = '×';
+      remove.title = `${profile.name} aus dem lokalen Katalog löschen`;
+      remove.setAttribute('aria-label', remove.title);
+      remove.addEventListener('click', async () => {
+        if (!window.confirm(`Lokales Profil „${profile.name}“ wirklich löschen?`)) return;
+        const result = await api.delete_voice_profile(profile.id);
+        if (!result.ok) {
+          setViewStatus('speaker-status', result.error || 'Profil konnte nicht gelöscht werden.', true);
+          return;
+        }
+        applyVoiceCatalog(result.voice_catalog || {});
+        setViewStatus('speaker-status', `Lokales Profil „${profile.name}“ gelöscht.`);
+      });
+      chip.append(label, remove);
+      profileList.append(chip);
+    });
   };
   const renderPreview = (segments, outputLocation) => {
     const preview = $('preview');
@@ -157,6 +216,7 @@
       if (color) identity.style.color = color;
       const input = document.createElement('input');
       input.type = 'text';
+      input.setAttribute('list', 'voice-profile-names');
       input.value = speaker.name || '';
       input.dataset.speakerId = speaker.id;
       input.addEventListener('input', () => {
@@ -168,6 +228,20 @@
       play.textContent = '▶ Abspielen';
       play.addEventListener('click', () => playFromSpeaker(speaker.id, speaker.name || speaker.id));
       row.append(identity, input, play);
+      const suggestion = (speaker.suggestions || [])[0];
+      if (suggestion) {
+        const useSuggestion = document.createElement('button');
+        useSuggestion.type = 'button';
+        useSuggestion.className = 'speaker-suggestion';
+        useSuggestion.textContent = `${suggestion.name} · ${Math.round(suggestion.score * 100)} %`;
+        useSuggestion.title = 'Lokalen Vorschlag übernehmen; wird nicht automatisch angewendet.';
+        useSuggestion.addEventListener('click', () => {
+          input.value = suggestion.name;
+          renderSpeakerTranscript();
+          renderWaveformLabels();
+        });
+        row.append(useSuggestion);
+      }
       target.append(row);
     });
     $('speaker-editor').hidden = false;
@@ -855,15 +929,18 @@
   // Ausgabeoptionen sofort persistieren, nicht erst beim Transkriptions-Start.
   const persistOutputOptions = () => {
     if (!api) return;
+    toggleVoiceProfiles();
     const s = formSettings();
     api.save_output_options({
       formats: s.formats, keep_wav: s.keep_wav, verbose: s.verbose,
       no_diarize: s.no_diarize, auto_markers: s.auto_markers, colocate: s.colocate,
+      voice_profiles: s.voice_profiles,
     }).catch(() => {});
   };
-  document.querySelectorAll('input[name="format"], #keep-wav, #verbose, #no-diarize, #auto-markers, #colocate')
+  document.querySelectorAll('input[name="format"], #keep-wav, #verbose, #no-diarize, #auto-markers, #colocate, #voice-profiles')
     .forEach((input) => input.addEventListener('change', persistOutputOptions));
   $('colocate').addEventListener('change', toggleColocate);
+  $('no-diarize').addEventListener('change', toggleVoiceProfiles);
   [['audio', 'pick-audio'], ['marker', 'pick-marker'], ['output', 'pick-output'], ['model', 'pick-model']]
     .forEach(([kind, id]) => $(id).addEventListener('click', async () => {
       const result = await api[`pick_${kind}`]();
@@ -1046,6 +1123,18 @@
     }
     renderSpeakers(result.speakers || []);
     setViewStatus('speaker-status', `${result.files_rewritten} Dateien neu geschrieben.`);
+  });
+  $('remember-speakers').addEventListener('click', async () => {
+    const result = await api.save_voice_profile_names(currentSpeakerNames(), reviewId);
+    if (!result.ok) {
+      setViewStatus('speaker-status', result.error || 'Namen konnten nicht gespeichert werden.', true);
+      return;
+    }
+    applyVoiceCatalog(result.voice_catalog || {});
+    const voiceprints = result.voiceprints_saved
+      ? `, ${result.voiceprints_saved} Stimmprofile aktualisiert`
+      : '';
+    setViewStatus('speaker-status', `${result.saved.length} Namen lokal gespeichert${voiceprints}.`);
   });
   $('pick-watch').addEventListener('click', async () => {
     const result = await api.pick_watch_dir();

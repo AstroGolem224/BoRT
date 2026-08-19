@@ -33,7 +33,7 @@ class TranscriptionSettings:
     language: str | None
     task: str
     backend: str
-    whisperx_model: str = "large-v3"
+    whisperx_model: str = "large-v3-turbo"
     min_speakers: str = ""
     max_speakers: str = ""
     keep_wav: bool = False
@@ -41,6 +41,7 @@ class TranscriptionSettings:
     no_diarize: bool = False
     auto_markers: bool = True
     colocate: bool = True
+    voice_profiles: bool = False
 
 
 @dataclass(frozen=True)
@@ -57,12 +58,13 @@ class TranscriptionParams:
     verbose: bool = False
     task: str = "transcribe"
     backend: str = "whispercpp"
-    whisperx_model: str = "large-v3"
+    whisperx_model: str = "large-v3-turbo"
     min_speakers: int | None = None
     max_speakers: int | None = None
     no_diarize: bool = False
     auto_markers: bool = True
     colocate: bool = True
+    voice_profiles: bool = False
 
 
 @dataclass(frozen=True)
@@ -134,7 +136,7 @@ def build_params(settings: TranscriptionSettings) -> ParamsResult:
             language=settings.language,
             task=settings.task,
             backend=settings.backend,
-            whisperx_model=settings.whisperx_model or "large-v3",
+            whisperx_model=settings.whisperx_model or "large-v3-turbo",
             min_speakers=min_speakers if settings.backend == "whisperx" else None,
             max_speakers=max_speakers if settings.backend == "whisperx" else None,
             keep_wav=settings.keep_wav,
@@ -142,6 +144,7 @@ def build_params(settings: TranscriptionSettings) -> ParamsResult:
             no_diarize=settings.no_diarize,
             auto_markers=settings.auto_markers,
             colocate=settings.colocate,
+            voice_profiles=settings.voice_profiles and settings.backend == "whisperx",
         )
     )
 
@@ -226,6 +229,9 @@ def transcription_worker(params: TranscriptionParams, emit: EventEmitter) -> Non
             bookmarks = []
     wx_speaker_map: dict[str, str] | None = None
     wx_markers: list[SpeakerMarker] | None = None
+    wx_embeddings: dict[str, list[float]] | None = None
+    wx_embedding_model: str | None = None
+    wx_runtime_metrics: dict[str, float] | None = None
 
     def progress(percent: float, phase: str) -> None:
         emit(("progress", percent, phase))
@@ -247,6 +253,7 @@ def transcription_worker(params: TranscriptionParams, emit: EventEmitter) -> Non
                 min_speakers=params.min_speakers,
                 max_speakers=params.max_speakers,
                 no_diarize=params.no_diarize,
+                return_embeddings=params.voice_profiles,
                 progress_cb=progress,
             )
             marker_data = None
@@ -264,10 +271,15 @@ def transcription_worker(params: TranscriptionParams, emit: EventEmitter) -> Non
                 len(result.speaker_map),
             )
             logger.info("Erkannte Sprache: %s", result.language or "unbekannt")
+            if result.runtime_metrics:
+                logger.info("Laufzeiten: %s", result.runtime_metrics)
             speaker_segments = MarkerSpeakerResolver(result.markers, result.speaker_map).resolve(
                 result.segments
             )
             wx_speaker_map, wx_markers = dict(result.speaker_map), list(result.markers)
+            wx_embeddings = dict(result.speaker_embeddings)
+            wx_embedding_model = result.embedding_model
+            wx_runtime_metrics = dict(result.runtime_metrics)
         else:
             if not params.model_path:
                 raise TranscriptionError("Modell-Pfad fehlt (für whisper.cpp-Backend erforderlich)")
@@ -301,7 +313,16 @@ def transcription_worker(params: TranscriptionParams, emit: EventEmitter) -> Non
                 resolver = PlaceholderSpeakerResolver()
             speaker_segments = resolver.resolve(result.segments)
         progress(95.0, "Speichere")
-        review_data = _review_data(params, speaker_segments, wx_speaker_map, wx_markers, bookmarks)
+        review_data = _review_data(
+            params,
+            speaker_segments,
+            wx_speaker_map,
+            wx_markers,
+            bookmarks,
+            wx_embeddings,
+            wx_embedding_model,
+            wx_runtime_metrics,
+        )
         output_paths = write_outputs(
             speaker_segments,
             effective_output,
@@ -355,14 +376,17 @@ def _review_data(
     speaker_map: dict[str, str] | None,
     markers: list[SpeakerMarker] | None,
     bookmarks: list[Bookmark],
+    speaker_embeddings: dict[str, list[float]] | None = None,
+    embedding_model: str | None = None,
+    runtime_metrics: dict[str, float] | None = None,
 ) -> dict[str, Any] | None:
     if params.backend != "whisperx":
         return None
     # Bei der Ersterstellung sind Anzeigenamen noch eindeutig (rohe SPEAKER_XX),
     # die Rückabbildung ist hier also verlustfrei.
     reverse_map = {name: speaker_id for speaker_id, name in (speaker_map or {}).items()}
-    return {
-        "schema_version": 2,
+    review = {
+        "schema_version": 3 if speaker_embeddings or runtime_metrics else 2,
         "audio_path": str(params.audio_path),
         "segments": [
             {
@@ -389,4 +413,19 @@ def _review_data(
         ],
         "base_name": params.audio_path.stem,
         "formats": params.formats,
+        "run_metadata": {
+            "backend": params.backend,
+            "model": params.whisperx_model,
+            "language": params.language or "auto",
+            "diarize": not params.no_diarize,
+            "min_speakers": params.min_speakers,
+            "max_speakers": params.max_speakers,
+            "voice_profiles": params.voice_profiles,
+        },
     }
+    if speaker_embeddings:
+        review["speaker_embeddings"] = speaker_embeddings
+        review["embedding_model"] = embedding_model
+    if runtime_metrics:
+        review["runtime_metrics"] = runtime_metrics
+    return review

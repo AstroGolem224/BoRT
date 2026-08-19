@@ -40,6 +40,7 @@ from .mailer import MailError, is_valid_address, load_app_password, send_zip, st
 from .sidecar import read_recording_meta, resample_peaks
 from .speaker_review import ReviewError, load_review
 from .speakers import SpeakerSegment
+from .voice_profiles import VoiceCatalog, VoiceCatalogError
 from .waveform import WaveformError, extract_peaks, terminate_process
 from .writers import FORMATS, recover_transactions
 
@@ -81,10 +82,24 @@ class Bridge:
     """Thread-sichere API zwischen der lokalen Oberfläche und den Controllern."""
 
     def __init__(
-        self, config: Config | None = None, controller: JobController | None = None
+        self,
+        config: Config | None = None,
+        controller: JobController | None = None,
+        voice_catalog: VoiceCatalog | None = None,
     ) -> None:
         self.config = config or Config()
         self.controller = controller or JobController()
+        self._voice_catalog_error = ""
+        if voice_catalog is not None:
+            self.voice_catalog = voice_catalog
+        else:
+            try:
+                self.voice_catalog = VoiceCatalog()
+            except VoiceCatalogError as exc:
+                # Ein beschädigter Katalog darf niemals still überschrieben werden,
+                # aber auch nicht den Start der Transkriptions-App verhindern.
+                self.voice_catalog = None
+                self._voice_catalog_error = str(exc)
         self.speaker_controller = SpeakerEditController()
         self.batch_controller = BatchController(self.controller, self._enqueue_batch_event)
         self.window: webview.Window | None = None
@@ -184,7 +199,9 @@ class Bridge:
                     "backend": self.config.get("last_backend", "whispercpp"),
                     "language": self.config.get("last_language", "auto"),
                     "task": self._task_value(self.config.get("last_task_display", "transcribe")),
-                    "whisperx_model": self.config.get("last_whisperx_model", "large-v3"),
+                    "whisperx_model": self.config.get(
+                        "last_whisperx_model", "large-v3-turbo"
+                    ),
                     "formats": [item for item in str(formats).split(",") if item],
                     "min_speakers": self.config.get("last_min_speakers", ""),
                     "max_speakers": self.config.get("last_max_speakers", ""),
@@ -193,8 +210,117 @@ class Bridge:
                     "no_diarize": self.config.get("last_no_diarize", False),
                     "auto_markers": self.config.get("last_auto_markers", True),
                     "colocate": self.config.get("last_colocate", True),
+                    "voice_profiles": self.config.get("last_voice_profiles", False),
                 },
+                "voice_catalog": self._voice_catalog_state(),
             }
+
+    def _voice_catalog_state(self) -> dict[str, Any]:
+        """Gibt nur UI-Metadaten zurück, niemals biometrische Vektoren."""
+        if self.voice_catalog is None:
+            return {
+                "available": False,
+                "error": self._voice_catalog_error or "Stimmenkatalog ist nicht verfügbar.",
+                "profiles": [],
+                "names": [],
+            }
+        profiles = self.voice_catalog.list_profiles()
+        return {
+            "available": True,
+            "error": "",
+            "profiles": [
+                {
+                    "id": profile.id,
+                    "name": profile.name,
+                    "has_voiceprint": profile.embedding is not None,
+                    "sample_count": profile.sample_count,
+                }
+                for profile in profiles
+            ],
+            "names": self.voice_catalog.names(),
+        }
+
+    def list_voice_profiles(self) -> dict[str, Any]:
+        """Aktualisiert die lokale Namensliste für die Sprecher-Auswahl."""
+        state = self._voice_catalog_state()
+        return {"ok": state["available"], **state}
+
+    def delete_voice_profile(self, profile_id: Any) -> dict[str, Any]:
+        """Löscht genau ein ausdrücklich ausgewähltes lokales Profil."""
+        if self.voice_catalog is None:
+            return {
+                "ok": False,
+                "error": self._voice_catalog_error or "Stimmenkatalog ist nicht verfügbar.",
+            }
+        if not isinstance(profile_id, str):
+            return {"ok": False, "error": "Ungültige Stimmprofil-ID."}
+        try:
+            self.voice_catalog.delete(profile_id)
+        except VoiceCatalogError as exc:
+            return {"ok": False, "error": str(exc)}
+        return {"ok": True, "voice_catalog": self._voice_catalog_state()}
+
+    def save_voice_profile_names(
+        self, rename_map: Any, review_id: Any = None
+    ) -> dict[str, Any]:
+        """Speichert bestätigte Namen und optional deren Review-Stimmabdruck."""
+        if self.voice_catalog is None:
+            return {
+                "ok": False,
+                "error": self._voice_catalog_error or "Stimmenkatalog ist nicht verfügbar.",
+            }
+        if not isinstance(rename_map, dict):
+            return {"ok": False, "error": "Ungültige Sprecherliste."}
+        if len(rename_map) > 100:
+            return {"ok": False, "error": "Zu viele Sprecher in einer Anfrage."}
+
+        saved: list[str] = []
+        voiceprints_saved = 0
+        skipped: list[str] = []
+        seen: set[str] = set()
+        review = None
+        if review_id is not None:
+            if not isinstance(review_id, str):
+                return {"ok": False, "error": "Ungültige Review-ID."}
+            try:
+                review = self.speaker_controller.get(review_id)
+            except SpeakerEditError as exc:
+                return {"ok": False, "error": str(exc)}
+        try:
+            for raw_id, raw_name in rename_map.items():
+                if not isinstance(raw_id, str) or not isinstance(raw_name, str):
+                    raise VoiceCatalogError("Sprecher-ID und Name müssen Text sein.")
+                name = " ".join(raw_name.split())
+                generic = name.casefold() == raw_id.casefold() or name.casefold().startswith(
+                    "sprecher0"
+                )
+                if not name or generic:
+                    skipped.append(raw_id)
+                    continue
+                folded = name.casefold()
+                embedding = review.speaker_embeddings.get(raw_id) if review else None
+                model = review.embedding_model if embedding is not None and review else None
+                self.voice_catalog.enroll(name, embedding, model)
+                if embedding is not None:
+                    voiceprints_saved += 1
+                if folded not in seen:
+                    seen.add(folded)
+                    saved.append(name)
+        except VoiceCatalogError as exc:
+            return {"ok": False, "error": str(exc)}
+        if not saved:
+            return {
+                "ok": False,
+                "error": "Keine bestätigten Personennamen gefunden.",
+                "skipped": skipped,
+            }
+        return {
+            "ok": True,
+            "saved": saved,
+            "skipped": skipped,
+            "voiceprints_saved": voiceprints_saved,
+            "voice_catalog": self._voice_catalog_state(),
+        }
 
     def pick_audio(self) -> dict[str, Any]:
         return self._pick_file("audio", "Audio-Datei auswählen", (AUDIO_FILTER, ALL_FILES_FILTER))
@@ -239,6 +365,10 @@ class Bridge:
             segment_ids=list(review.segment_ids),
             marker_ids=list(review.marker_ids),
             review_path=path,
+            speaker_embeddings=dict(review.speaker_embeddings),
+            embedding_model=review.embedding_model,
+            runtime_metrics=dict(review.runtime_metrics),
+            run_metadata=dict(review.run_metadata),
         )
         with self._state_lock:
             review_id = self.speaker_controller.register(registered)
@@ -279,16 +409,42 @@ class Bridge:
             "base_name": review.base_name,
             "audio_name": review.audio_path.name,
             "audio_url": audio_url,
-            "speakers": [
-                {"id": speaker_id, "name": name}
-                for speaker_id, name in review.speaker_map.items()
-            ],
+            "speakers": self._speaker_rows(review),
             "segments": segments,
             "bookmarks": bookmarks,
             "sidecar_peaks": meta.peaks if meta else [],
             "sidecar_duration_ms": meta.duration_ms if meta else 0,
             "rename_allowed": True,
+            "runtime_metrics": review.runtime_metrics,
+            "run_metadata": review.run_metadata,
         }
+
+    def _speaker_rows(self, review: Any) -> list[dict[str, Any]]:
+        """Ergänzt Sprecher um rein lokale, nicht automatisch angewandte Treffer."""
+        rows = []
+        for speaker_id, name in review.speaker_map.items():
+            suggestions = []
+            embedding = review.speaker_embeddings.get(speaker_id)
+            if (
+                self.voice_catalog is not None
+                and embedding is not None
+                and review.embedding_model
+            ):
+                try:
+                    suggestions = [
+                        {
+                            "profile_id": match.profile_id,
+                            "name": match.name,
+                            "score": round(match.score, 4),
+                        }
+                        for match in self.voice_catalog.match(
+                            embedding, review.embedding_model
+                        )
+                    ]
+                except VoiceCatalogError:
+                    suggestions = []
+            rows.append({"id": speaker_id, "name": name, "suggestions": suggestions})
+        return rows
 
     def _register_waveform_process(
         self,
@@ -387,7 +543,13 @@ class Bridge:
 
         def update() -> None:
             self.config.set("last_formats", ",".join(cleaned))
-            for key in ("keep_wav", "verbose", "no_diarize", "auto_markers"):
+            for key in (
+                "keep_wav",
+                "verbose",
+                "no_diarize",
+                "auto_markers",
+                "voice_profiles",
+            ):
                 self.config.set(f"last_{key}", bool(options.get(key)))
             if "colocate" in options:
                 self.config.set("last_colocate", bool(options.get("colocate")))
@@ -812,6 +974,7 @@ class Bridge:
             raw.get("colocate") is True,
             raw.get("no_diarize") is True,
             raw.get("auto_markers") is True,
+            raw.get("voice_profiles") is True,
         )
 
     def scan_batch(self, raw_settings: Any = None) -> dict[str, Any]:
@@ -1121,7 +1284,9 @@ class Bridge:
             language=None if language == "auto" else language,
             task=task,
             backend=backend,
-            whisperx_model=self._choice(raw.get("whisperx_model"), "large-v3"),
+            whisperx_model=self._choice(
+                raw.get("whisperx_model"), "large-v3-turbo"
+            ),
             min_speakers=self._speaker_count(raw.get("min_speakers")),
             max_speakers=self._speaker_count(raw.get("max_speakers")),
             keep_wav=raw.get("keep_wav") is True,
@@ -1129,11 +1294,20 @@ class Bridge:
             no_diarize=raw.get("no_diarize") is True,
             auto_markers=raw.get("auto_markers") is True,
             colocate=colocate,
+            voice_profiles=raw.get("voice_profiles") is True,
         )
 
     @staticmethod
     def _choice(value: Any, default: str) -> str:
-        choices = {"large-v3", "large-v2", "medium", "small", "base", "tiny"}
+        choices = {
+            "large-v3",
+            "large-v3-turbo",
+            "large-v2",
+            "medium",
+            "small",
+            "base",
+            "tiny",
+        }
         return value if value in choices else default
 
     @staticmethod
@@ -1169,6 +1343,7 @@ class Bridge:
             self.config.set("last_no_diarize", params.no_diarize)
             self.config.set("last_auto_markers", params.auto_markers)
             self.config.set("last_colocate", params.colocate)
+            self.config.set("last_voice_profiles", params.voice_profiles)
 
         self.controller.update_config(self.config, update)
 

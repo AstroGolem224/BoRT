@@ -7,8 +7,6 @@ Unterordner anklickt -> der aktuell geöffnete Ordner ist nicht wählbar
 behalten ihre Filter.
 """
 
-import webview
-
 from bort.app import Bridge
 
 

@@ -22,7 +22,7 @@ from .writers import write_outputs
 logger = logging.getLogger(__name__)
 
 DEFAULT_FORMATS = ["txt", "md", "csv", "tsv"]
-DEFAULT_WHISPERX_MODEL = "large-v3"
+DEFAULT_WHISPERX_MODEL = "large-v3-turbo"
 
 
 def _positive_int(value: str) -> int:

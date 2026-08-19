@@ -8,6 +8,21 @@ Features:
 - Ausgabe in **Text**, **Markdown** und **Tabelle** (CSV/TSV)
 - whisper.cpp als Backend (lokal, ohne Cloud)
 - whisperX (GPU + Diarization) als Backend
+- `large-v3-turbo` als schneller GPU-Default für neue Installationen
+- Lokaler Namenskatalog und optionale, bestätigungspflichtige Stimmprofile
+
+## Lokaler Sprecherkatalog
+
+In der Sprecher-Ansicht können bestätigte Namen mit **Namen lokal merken** in
+`~/.local/share/bort/voice_profiles.json` gespeichert und später über die
+Namensauswahl wiederverwendet werden.
+
+Die Option **Stimmprofile lokal erfassen** ist standardmäßig ausgeschaltet. Wenn
+sie vor einer whisperX-Transkription eingeschaltet wird, speichert die private
+Review-Datei die von pyannote erzeugten Sprecher-Embeddings. Erst nach manueller
+Benennung übernimmt BoRT sie in den lokalen Katalog. Spätere Treffer erscheinen
+nur als Vorschlag mit Ähnlichkeitswert und werden nie automatisch angewendet.
+Es werden keine Audioausschnitte in den Katalog kopiert.
 
 ## Schnellstart
 

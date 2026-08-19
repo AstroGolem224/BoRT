@@ -1,6 +1,7 @@
 """Tests für Ausgabeformate."""
 
 import json
+import stat
 import tempfile
 from datetime import datetime
 from pathlib import Path
@@ -142,6 +143,23 @@ def test_write_outputs_with_review_data_writes_sidecar(tmp_path: Path) -> None:
     review_path = paths[0].parent / "session.review.json"
     assert review_path in paths
     assert json.loads(review_path.read_text(encoding="utf-8")) == review_data
+
+
+def test_review_with_biometric_embeddings_is_private(tmp_path: Path) -> None:
+    segments = [SpeakerSegment(0.0, 1.0, "SP1", "Hallo")]
+    review_data = {
+        **_review_data(tmp_path),
+        "schema_version": 3,
+        "speaker_embeddings": {"SP1": [1.0, 0.0]},
+        "embedding_model": "embed-v1",
+    }
+
+    paths = write_outputs(
+        segments, tmp_path, "session", ["txt"], review_data=review_data
+    )
+    review_path = next(path for path in paths if path.name.endswith(".review.json"))
+
+    assert stat.S_IMODE(review_path.stat().st_mode) == 0o600
 
 
 def test_write_outputs_review_sidecar_base_name_matches_collision_name(tmp_path: Path) -> None:

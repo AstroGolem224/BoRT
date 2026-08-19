@@ -46,7 +46,15 @@ BACKENDS = {
     "whisper.cpp": "whispercpp",
     "whisperX (GPU + Diarization)": "whisperx",
 }
-WHISPERX_MODELS = ["large-v3", "large-v2", "medium", "small", "base", "tiny"]
+WHISPERX_MODELS = [
+    "large-v3-turbo",
+    "large-v3",
+    "large-v2",
+    "medium",
+    "small",
+    "base",
+    "tiny",
+]
 
 
 @dataclass
@@ -63,7 +71,7 @@ class TranscriptionParams:
     verbose: bool = False
     task: str = "transcribe"
     backend: str = "whispercpp"  # "whispercpp" | "whisperx"
-    whisperx_model: str = "large-v3"
+    whisperx_model: str = "large-v3-turbo"
     min_speakers: int | None = None
     max_speakers: int | None = None
     no_diarize: bool = False
@@ -686,7 +694,7 @@ class TranscriptionApp:
         # Noch nicht gridded
 
         # whisperX: Dropdown (OptionMenu)
-        self.model_combo_var = ctk.StringVar(value="large-v3")
+        self.model_combo_var = ctk.StringVar(value="large-v3-turbo")
         self.model_combo = ctk.CTkOptionMenu(
             parent,
             variable=self.model_combo_var,

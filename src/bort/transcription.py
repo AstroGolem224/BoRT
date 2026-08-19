@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 import re
 import shutil
 import tempfile
@@ -27,6 +28,17 @@ class TranscriptionResult:
     segments: list[Segment]
     language: str | None
     text: str
+
+
+def recommended_thread_count(cpu_count: int | None = None) -> int:
+    """Wählt eine konservative whisper.cpp-Threadzahl für physische Kerne.
+
+    ``os.cpu_count`` liefert auf üblichen Desktop-CPUs logische Threads. Die
+    Hälfte ist deshalb ein guter Startwert; zwölf begrenzt die Konkurrenz mit
+    Oberfläche, Audio-Decoding und anderen lokalen Diensten.
+    """
+    logical = cpu_count if cpu_count is not None else (os.cpu_count() or 4)
+    return max(1, min(12, logical // 2))
 
 
 def _find_whisper_cli() -> Path:
@@ -76,10 +88,13 @@ def _run_whisper(
             str(model_path),
             "-f",
             str(wav_path),
+            "--threads",
+            str(recommended_thread_count()),
             "--output-json",
             "--output-file",
             str(json_path.with_suffix("")),
-            "--print-progress",  # gibt "whisper_print_progress_callback: progress = NNN%" auf stderr
+            # Gibt "whisper_print_progress_callback: progress = NNN%" auf stderr.
+            "--print-progress",
         ]
         # Wichtig: whisper-cli defaultet auf '-l en', daher immer explizit 'auto' setzen,
         # wenn keine Sprache gewählt wurde. Sonst wird nicht-englische Sprache oft
@@ -90,7 +105,6 @@ def _run_whisper(
 
         logger.debug("whisper-cli Aufruf: %s", " ".join(cmd))
 
-        import re
         from .streaming import run_stream_progress
 
         progress_re = re.compile(r"progress\s*=\s*(\d+)\s*%")
@@ -108,9 +122,17 @@ def _run_whisper(
                 pass
 
         try:
+            env = os.environ.copy()
+            if binary.parent.is_dir():
+                library_path = str(binary.parent.resolve())
+                existing = env.get("LD_LIBRARY_PATH")
+                env["LD_LIBRARY_PATH"] = (
+                    f"{library_path}{os.pathsep}{existing}" if existing else library_path
+                )
             stdout_data, stderr_data = run_stream_progress(
                 cmd,
                 on_line=_on_line,
+                env=env,
             )
         except RuntimeError as exc:
             raise TranscriptionError(str(exc)) from exc
