@@ -221,7 +221,7 @@
       input.value = speaker.name || '';
       input.dataset.speakerId = speaker.id;
       input.addEventListener('input', () => {
-        renderSpeakerTranscript();
+        updateSpeakerTranscriptNames();
         renderWaveformLabels();
       });
       const play = document.createElement('button');
@@ -238,7 +238,7 @@
         useSuggestion.title = 'Lokalen Vorschlag übernehmen; wird nicht automatisch angewendet.';
         useSuggestion.addEventListener('click', () => {
           input.value = suggestion.name;
-          renderSpeakerTranscript();
+          updateSpeakerTranscriptNames();
           renderWaveformLabels();
         });
         row.append(useSuggestion);
@@ -280,6 +280,23 @@
     });
     target.textContent = '';
     target.append(fragment);
+    const count = $('speaker-transcript-count');
+    if (count) {
+      count.textContent = reviewSegments.length === 1
+        ? '1 Segment'
+        : `${reviewSegments.length} Segmente`;
+    }
+  };
+  const updateSpeakerTranscriptNames = () => {
+    const target = $('speaker-transcript');
+    if (!target) return;
+    const names = currentSpeakerNames();
+    target.querySelectorAll('.segment[data-speaker-id]').forEach((row) => {
+      const speaker = row.querySelector('.speaker');
+      if (!speaker) return;
+      const speakerId = row.dataset.speakerId;
+      speaker.textContent = names[speakerId] || speakerId || 'Sprecher';
+    });
   };
 
   // --- Audio-Player (Sprecher-Ansicht) ---

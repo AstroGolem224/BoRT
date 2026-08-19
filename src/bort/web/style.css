@@ -366,12 +366,13 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   align-items: start;
 }
 .speaker-layout > .card { margin: 0; }
-.speaker-transcript-card { position: sticky; top: 0; }
+.speaker-transcript-card { min-width: 0; }
 .speaker-transcript {
   margin-top: 16px;
-  max-height: 60vh;
-  overflow: auto;
-  padding-right: 6px;
+  /* Kein verschachtelter 60-vh-Scrollbereich: Das vollständige Transkript
+     wächst mit der Seite und bleibt auch bei vielen Sprechern erreichbar. */
+  max-height: none;
+  overflow: visible;
 }
 .speaker-transcript .segment:first-child { padding-top: 0; }
 .speaker-transcript .segment { cursor: pointer; }
@@ -531,7 +532,6 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   .speaker-edit-row { grid-template-columns: 90px 1fr; }
   .speaker-edit-row button { grid-column: 2; justify-self: end; }
   .speaker-layout { grid-template-columns: 1fr; }
-  .speaker-transcript-card { position: static; }
   .library-card { grid-template-columns: 1fr; }
   .library-actions { justify-content: flex-end; }
 }
