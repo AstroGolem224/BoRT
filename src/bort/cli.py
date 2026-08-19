@@ -115,6 +115,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Sprecher-Diarisierung überspringen (nur whisperX)",
     )
     parser.add_argument(
+        "--performance-profile",
+        choices=["fast", "balanced", "quality"],
+        default="balanced",
+        help="Decoding-Profil: fast (Beam 1), balanced (Beam 3), quality (Beam 5)",
+    )
+    parser.add_argument(
         "--auto-markers",
         action="store_true",
         help="Automatisch erzeugte Marker nutzen und speichern (nur whisperX)",
@@ -170,6 +176,7 @@ def main(argv: list[str] | None = None) -> int:
                 min_speakers=args.min_speakers,
                 max_speakers=args.max_speakers,
                 no_diarize=args.no_diarize,
+                performance_profile=args.performance_profile,
             )
             logger.info(
                 "Transkription abgeschlossen (%d Segmente, %d Sprecher).",

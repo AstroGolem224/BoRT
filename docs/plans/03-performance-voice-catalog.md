@@ -9,6 +9,9 @@ Bereits umgesetzt und getestet:
 
 - `large-v3-turbo` ist der neue Default für neue Installationen; bestehende
   gespeicherte Modellwahlen bleiben erhalten.
+- Die GUI bietet die reproduzierbaren Decode-Profile `Schnell` (Beam 1),
+  `Ausgewogen` (Beam 3) und `Maximale Qualität` (Beam 5); Batchgröße und Profil
+  werden an whisper-tagger durchgereicht und in den Laufmetadaten festgehalten.
 - whisper.cpp erhält automatisch eine passende Threadzahl und einen lokalen
   `LD_LIBRARY_PATH`, wodurch der zuvor nicht startbare Vendor-Build wieder läuft.
 - Ohne Diarisierung überspringt whisper-tagger das nicht benötigte Alignment.

@@ -96,6 +96,7 @@
     keep_wav: $('keep-wav').checked, verbose: $('verbose').checked,
     no_diarize: $('no-diarize').checked, auto_markers: $('auto-markers').checked,
     colocate: $('colocate').checked, voice_profiles: $('voice-profiles').checked,
+    performance_profile: $('performance-profile').value,
   });
   const toggleColocate = () => {
     const active = $('colocate').checked;
@@ -105,7 +106,7 @@
   const applyInitialState = (state) => {
     Object.entries(state.paths || {}).forEach(([key, value]) => setPath(key, value));
     const settings = state.settings || {};
-    [['backend', 'backend'], ['language', 'language'], ['task', 'task'], ['whisperx_model', 'whisperx-model']]
+    [['backend', 'backend'], ['language', 'language'], ['task', 'task'], ['whisperx_model', 'whisperx-model'], ['performance_profile', 'performance-profile']]
       .forEach(([key, id]) => { if (settings[key]) $(id).value = settings[key]; });
     [['min_speakers', 'min-speakers'], ['max_speakers', 'max-speakers']]
       .forEach(([key, id]) => { if (settings[key]) $(id).value = settings[key]; });
@@ -935,9 +936,10 @@
       formats: s.formats, keep_wav: s.keep_wav, verbose: s.verbose,
       no_diarize: s.no_diarize, auto_markers: s.auto_markers, colocate: s.colocate,
       voice_profiles: s.voice_profiles,
+      performance_profile: s.performance_profile,
     }).catch(() => {});
   };
-  document.querySelectorAll('input[name="format"], #keep-wav, #verbose, #no-diarize, #auto-markers, #colocate, #voice-profiles')
+  document.querySelectorAll('input[name="format"], #keep-wav, #verbose, #no-diarize, #auto-markers, #colocate, #voice-profiles, #performance-profile')
     .forEach((input) => input.addEventListener('change', persistOutputOptions));
   $('colocate').addEventListener('change', toggleColocate);
   $('no-diarize').addEventListener('change', toggleVoiceProfiles);

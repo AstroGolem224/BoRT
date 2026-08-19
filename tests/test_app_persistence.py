@@ -69,6 +69,7 @@ def test_save_output_options_persists_immediately(tmp_path):
             "verbose": False,
             "no_diarize": True,
             "auto_markers": False,
+            "performance_profile": "fast",
         }
     )
     assert result == {"ok": True}
@@ -79,6 +80,7 @@ def test_save_output_options_persists_immediately(tmp_path):
     assert settings["keep_wav"] is True
     assert settings["no_diarize"] is True
     assert settings["auto_markers"] is False
+    assert settings["performance_profile"] == "fast"
     assert settings["colocate"] is True
 
 

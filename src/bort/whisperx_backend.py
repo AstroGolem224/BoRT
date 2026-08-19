@@ -35,6 +35,11 @@ WHISPER_TAGGER_RUN = WHISPER_TAGGER_DIR / "run.sh"
 
 # Default-Speaker-Prefix für das sprecherNNN-Labeling.
 DEFAULT_SPEAKER_PREFIX = "sprecher"
+PERFORMANCE_PROFILES = {
+    "fast": {"beam_size": 1, "batch_size": 32},
+    "balanced": {"beam_size": 3, "batch_size": 24},
+    "quality": {"beam_size": 5, "batch_size": 16},
+}
 
 
 class WhisperXError(Exception):
@@ -79,6 +84,7 @@ def _run_whisperx(
     no_diarize: bool = False,
     return_embeddings: bool = False,
     progress_cb: Callable[[float, str], None] | None = None,
+    performance_profile: str = "balanced",
 ) -> dict:
     """Führt das whisperX-Script aus und gibt das geparste JSON zurück.
 
@@ -108,6 +114,17 @@ def _run_whisperx(
         cmd.append("--no-diarize")
     if return_embeddings and not no_diarize:
         cmd.append("--return-embeddings")
+    profile = PERFORMANCE_PROFILES.get(
+        performance_profile, PERFORMANCE_PROFILES["balanced"]
+    )
+    cmd.extend(
+        [
+            "--beam-size",
+            str(profile["beam_size"]),
+            "--batch-size",
+            str(profile["batch_size"]),
+        ]
+    )
 
     logger.debug("whisperX-Backend Aufruf: %s", " ".join(cmd))
 
@@ -228,6 +245,7 @@ def transcribe(
     no_diarize: bool = False,
     return_embeddings: bool = False,
     progress_cb: Callable[[float, str], None] | None = None,
+    performance_profile: str = "balanced",
 ) -> WhisperXResult:
     """Transkribiert Audio mit whisperX und erzeugt Marker + Speaker-Map.
 
@@ -240,6 +258,7 @@ def transcribe(
         no_diarize: Sprecher-Diarisierung überspringen (nur Transkription).
         return_embeddings: Sprecher-Vektoren für explizite lokale Profile anfordern.
         progress_cb: Optionaler Callback (percent, phase) für Fortschritt.
+        performance_profile: ``fast``, ``balanced`` oder ``quality``.
 
     Returns:
         WhisperXResult mit Segmenten, Markern und Speaker-Map.
@@ -260,6 +279,7 @@ def transcribe(
         no_diarize,
         return_embeddings,
         progress_cb=progress_cb,
+        performance_profile=performance_profile,
     )
     segments, markers, speaker_map = _to_domain(data)
 

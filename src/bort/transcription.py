@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import shutil
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,11 +44,15 @@ def recommended_thread_count(cpu_count: int | None = None) -> int:
 
 def _find_whisper_cli() -> Path:
     """Findet das whisper-cli Binary."""
-    # 1. Im Projekt-vendor-Verzeichnis suchen
-    project_root = Path(__file__).resolve().parents[2]
-    vendored = project_root / "vendor" / "whisper.cpp" / "build" / "bin" / "whisper-cli"
-    if vendored.exists():
-        return vendored
+    # 1. Im PyInstaller-Bundle oder Projekt-vendor-Verzeichnis suchen.
+    roots = [Path(__file__).resolve().parents[2]]
+    bundle_root = getattr(sys, "_MEIPASS", None)
+    if bundle_root:
+        roots.insert(0, Path(bundle_root))
+    for root in roots:
+        vendored = root / "vendor" / "whisper.cpp" / "build" / "bin" / "whisper-cli"
+        if vendored.exists():
+            return vendored
 
     # 2. Im PATH suchen
     found = shutil.which("whisper-cli")

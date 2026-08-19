@@ -42,6 +42,7 @@ class TranscriptionSettings:
     auto_markers: bool = True
     colocate: bool = True
     voice_profiles: bool = False
+    performance_profile: str = "balanced"
 
 
 @dataclass(frozen=True)
@@ -65,6 +66,7 @@ class TranscriptionParams:
     auto_markers: bool = True
     colocate: bool = True
     voice_profiles: bool = False
+    performance_profile: str = "balanced"
 
 
 @dataclass(frozen=True)
@@ -124,6 +126,11 @@ def build_params(settings: TranscriptionSettings) -> ParamsResult:
 
     min_speakers = parse_speakers(settings.min_speakers, "Min. Sprecher")
     max_speakers = parse_speakers(settings.max_speakers, "Max. Sprecher")
+    performance_profile = (
+        settings.performance_profile
+        if settings.performance_profile in {"fast", "balanced", "quality"}
+        else "balanced"
+    )
     if errors:
         return ParamsResult(None, tuple(errors))
     return ParamsResult(
@@ -145,6 +152,7 @@ def build_params(settings: TranscriptionSettings) -> ParamsResult:
             auto_markers=settings.auto_markers,
             colocate=settings.colocate,
             voice_profiles=settings.voice_profiles and settings.backend == "whisperx",
+            performance_profile=performance_profile,
         )
     )
 
@@ -255,6 +263,7 @@ def transcription_worker(params: TranscriptionParams, emit: EventEmitter) -> Non
                 no_diarize=params.no_diarize,
                 return_embeddings=params.voice_profiles,
                 progress_cb=progress,
+                performance_profile=params.performance_profile,
             )
             marker_data = None
             if params.auto_markers and not params.no_diarize:
@@ -421,6 +430,7 @@ def _review_data(
             "min_speakers": params.min_speakers,
             "max_speakers": params.max_speakers,
             "voice_profiles": params.voice_profiles,
+            "performance_profile": params.performance_profile,
         },
     }
     if speaker_embeddings:

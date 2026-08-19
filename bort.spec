@@ -7,11 +7,21 @@ Die Backends bleiben externe Subprocess-Aufrufe:
   - ~/projects/whisper-tagger/ (whisperX-Backend)
 """
 
-from PyInstaller.utils.hooks import collect_all
+from PyInstaller.utils.hooks import collect_data_files
 from pathlib import Path
 
-# customtkinter: Daten + Hiddenimports einsammeln
-ctk_datas, ctk_binaries, ctk_hiddenimports = collect_all("customtkinter")
+bort_datas = collect_data_files("bort", includes=["web/*"])
+
+# CPU-Backend mit seinen lokalen Shared Libraries bündeln. Modelle bleiben
+# absichtlich externe Dateien und können in der GUI gewählt werden.
+WHISPER_BIN_DIR = Path("vendor/whisper.cpp/build/bin")
+whisper_binaries = []
+if WHISPER_BIN_DIR.exists():
+    whisper_binaries = [
+        (str(path), "vendor/whisper.cpp/build/bin")
+        for path in WHISPER_BIN_DIR.iterdir()
+        if path.name == "whisper-cli" or path.name.startswith(("libwhisper.so", "libggml"))
+    ]
 
 # App-Icon und Assets einbinden
 ASSETS_DIR = Path("assets")
@@ -26,9 +36,9 @@ block_cipher = None
 a = Analysis(
     ["src/bort/__main__.py"],
     pathex=[],
-    binaries=ctk_binaries,
-    datas=ctk_datas + asset_datas,
-    hiddenimports=ctk_hiddenimports,
+    binaries=whisper_binaries,
+    datas=bort_datas + asset_datas,
+    hiddenimports=[],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -45,6 +55,15 @@ a = Analysis(
     cipher=block_cipher,
     noarchive=False,
 )
+
+# GTK-Hooks sammeln auf Desktop-Systemen sonst sämtliche installierten Icon-
+# und Theme-Pakete ein (hier > 330.000 Dateien). BoRT nutzt eigene Web-Assets;
+# GTK darf Themes, Icons und Übersetzungen vom Zielsystem laden.
+a.datas = [
+    entry
+    for entry in a.datas
+    if not entry[0].startswith(("share/icons/", "share/themes/", "share/locale/"))
+]
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 

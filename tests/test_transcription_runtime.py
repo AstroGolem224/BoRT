@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 
 from bort import streaming
-from bort.transcription import _run_whisper, recommended_thread_count
+from bort.transcription import _find_whisper_cli, _run_whisper, recommended_thread_count
 
 
 def test_recommended_threads_uses_half_logical_cores_with_cap() -> None:
@@ -37,3 +37,14 @@ def test_whisper_cli_gets_threads_and_local_library_path(
 
     assert "--threads" in captured["cmd"]
     assert captured["env"]["LD_LIBRARY_PATH"].split(":")[0] == str(binary.parent)
+
+
+def test_find_whisper_cli_supports_pyinstaller_bundle(
+    monkeypatch, tmp_path: Path
+) -> None:
+    binary = tmp_path / "vendor" / "whisper.cpp" / "build" / "bin" / "whisper-cli"
+    binary.parent.mkdir(parents=True)
+    binary.write_bytes(b"")
+    monkeypatch.setattr("bort.transcription.sys._MEIPASS", str(tmp_path), raising=False)
+
+    assert _find_whisper_cli() == binary

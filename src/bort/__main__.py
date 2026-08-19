@@ -8,6 +8,13 @@ from __future__ import annotations
 import os
 import sys
 
+# Der einzelne Linux-Build wird oft direkt aus dem Dateimanager gestartet und
+# durchläuft dann nicht launch.sh. Dieselben NVIDIA/Wayland-sicheren Defaults
+# deshalb bereits vor dem Import von GTK/WebKit setzen.
+os.environ.setdefault("GDK_BACKEND", "x11")
+os.environ.setdefault("WEBKIT_DISABLE_DMABUF_RENDERER", "1")
+os.environ.setdefault("WEBKIT_DISABLE_COMPOSITING_MODE", "1")
+
 # -----------------------------------------------------------------------------
 # Verwende das systemweite Tcl/Tk 8.6, damit CustomTkinter nicht gegen eine
 # inkompatible/interne Tk-9.x-Library gelinkt (was unter XWayland zu XCB-

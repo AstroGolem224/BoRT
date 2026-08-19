@@ -24,6 +24,30 @@ def test_subprocess_requests_embeddings_only_when_enabled(monkeypatch) -> None:
     assert "--return-embeddings" not in commands[1]
 
 
+def test_subprocess_maps_performance_profile_to_decode_settings(monkeypatch) -> None:
+    commands: list[list[str]] = []
+    monkeypatch.setattr(backend, "_ensure_backend_available", lambda: None)
+
+    def fake_run(cmd, **_kwargs):
+        commands.append(cmd)
+        return json.dumps({"segments": []}), ""
+
+    monkeypatch.setattr(streaming, "run_stream_progress", fake_run)
+
+    backend._run_whisperx(
+        Path("audio.wav"),
+        None,
+        "large-v3-turbo",
+        None,
+        None,
+        performance_profile="fast",
+    )
+
+    command = commands[0]
+    assert command[command.index("--beam-size") + 1] == "1"
+    assert command[command.index("--batch-size") + 1] == "32"
+
+
 def test_result_preserves_embedding_metadata(monkeypatch, tmp_path: Path) -> None:
     audio = tmp_path / "audio.wav"
     audio.write_bytes(b"")

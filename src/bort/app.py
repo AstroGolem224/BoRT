@@ -211,6 +211,9 @@ class Bridge:
                     "auto_markers": self.config.get("last_auto_markers", True),
                     "colocate": self.config.get("last_colocate", True),
                     "voice_profiles": self.config.get("last_voice_profiles", False),
+                    "performance_profile": self.config.get(
+                        "last_performance_profile", "balanced"
+                    ),
                 },
                 "voice_catalog": self._voice_catalog_state(),
             }
@@ -553,6 +556,10 @@ class Bridge:
                 self.config.set(f"last_{key}", bool(options.get(key)))
             if "colocate" in options:
                 self.config.set("last_colocate", bool(options.get("colocate")))
+            self.config.set(
+                "last_performance_profile",
+                self._performance_profile(options.get("performance_profile")),
+            )
 
         self.controller.update_config(self.config, update)
         return {"ok": True}
@@ -975,6 +982,7 @@ class Bridge:
             raw.get("no_diarize") is True,
             raw.get("auto_markers") is True,
             raw.get("voice_profiles") is True,
+            raw.get("performance_profile"),
         )
 
     def scan_batch(self, raw_settings: Any = None) -> dict[str, Any]:
@@ -1295,6 +1303,9 @@ class Bridge:
             auto_markers=raw.get("auto_markers") is True,
             colocate=colocate,
             voice_profiles=raw.get("voice_profiles") is True,
+            performance_profile=self._performance_profile(
+                raw.get("performance_profile")
+            ),
         )
 
     @staticmethod
@@ -1320,6 +1331,10 @@ class Bridge:
             return value
         return str(number) if 1 <= number <= 99 else value
 
+    @staticmethod
+    def _performance_profile(value: Any) -> str:
+        return value if value in {"fast", "balanced", "quality"} else "balanced"
+
     def _save_settings(self, params: Any) -> None:
         def update() -> None:
             self.config.set_path("last_audio_path", params.audio_path)
@@ -1344,6 +1359,7 @@ class Bridge:
             self.config.set("last_auto_markers", params.auto_markers)
             self.config.set("last_colocate", params.colocate)
             self.config.set("last_voice_profiles", params.voice_profiles)
+            self.config.set("last_performance_profile", params.performance_profile)
 
         self.controller.update_config(self.config, update)
 

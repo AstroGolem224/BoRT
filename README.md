@@ -37,6 +37,18 @@ cd /home/itiger013/Dokumente/Github/BoRT
 
 Im Fenster kannst du Audio-Datei (MP3, M4A, AAC, ...), optional JSON-Marker, Modell, Backend und Formate auswählen.
 
+### Einzelne ausführbare Testdatei bauen
+
+```bash
+./scripts/build-test-executable.sh
+./dist/test-build/BoRT-voice-catalog-linux-x86_64
+```
+
+Der etwa 56 MB große Linux-x86_64-Build enthält GUI, Web-Ressourcen und
+`whisper-cli` samt Shared Libraries. Die GGML-Modelle und das CUDA-basierte
+whisper-tagger bleiben wegen ihrer Größe extern. Eine genaue Testabfolge steht in
+[docs/testing/voice-catalog-test-build.md](docs/testing/voice-catalog-test-build.md).
+
 ### CLI verwenden
 
 ```bash
