@@ -339,23 +339,92 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 }
 .card-heading h2 { margin-bottom: 0; }
 .actions { justify-content: flex-end; margin-top: 22px; }
-.speaker-rows, .batch-items { display: grid; gap: 14px; margin-top: 20px; }
-.speaker-edit-row {
-  display: grid;
-  grid-template-columns: max-content minmax(120px, 1fr) auto;
-  align-items: center;
-  gap: 12px;
-  padding: 14px 16px;
+.batch-items { display: grid; gap: 14px; margin-top: 20px; }
+.voice-catalog-panel {
+  margin-top: 16px;
+  border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg-sink);
-  box-shadow: var(--pressed-sm);
 }
-.speaker-id { color: var(--accent); font-weight: 600; white-space: nowrap; font-size: 13px; }
-.speaker-edit-row input { min-width: 0; }
-.speaker-suggestion { grid-column: 2 / -1; justify-self: start; font-size: 12px; }
+.voice-catalog-panel summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  color: var(--text);
+  font-size: 13px;
+  cursor: pointer;
+  list-style: none;
+}
+.voice-catalog-panel summary::-webkit-details-marker { display: none; }
+.voice-catalog-panel summary::after { content: "▾"; color: var(--muted); transition: transform 0.18s ease; }
+.voice-catalog-panel[open] summary::after { transform: rotate(180deg); }
+.voice-catalog-panel #voice-catalog-status { margin: 2px 12px 10px; font-size: 12px; }
+.speaker-picker-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 18px;
+  font-size: 13px;
+}
+.speaker-rows {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  max-height: 238px;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  margin-top: 9px;
+  padding-right: 4px;
+}
+.speaker-choice {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 3px 9px;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-sink);
+  border: 1px solid var(--border);
+  text-align: left;
+  transition: border-color 0.16s ease, background 0.16s ease, box-shadow 0.16s ease;
+}
+.speaker-choice:hover { border-color: rgba(34, 211, 238, 0.48); }
+.speaker-choice.active {
+  border-color: var(--accent);
+  background: rgba(34, 211, 238, 0.1);
+  box-shadow: 0 0 16px rgba(34, 211, 238, 0.09);
+}
+.speaker-color-dot {
+  grid-row: span 2;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 8px currentColor;
+}
+.speaker-choice-name { overflow: hidden; color: var(--text); font-size: 13px; font-weight: 650; text-overflow: ellipsis; white-space: nowrap; }
+.speaker-choice-id { overflow: hidden; color: var(--muted); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.speaker-detail {
+  margin-top: 12px;
+  padding: 13px 14px;
+  border: 1px solid rgba(34, 211, 238, 0.28);
+  border-radius: var(--radius-sm);
+  background: linear-gradient(135deg, rgba(34, 211, 238, 0.07), rgba(139, 92, 246, 0.05));
+}
+.speaker-detail-heading { display: flex; align-items: center; gap: 9px; color: var(--accent); font-size: 12px; }
+.speaker-name-field { margin: 10px 0 0; }
+.speaker-detail-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 9px; }
+.speaker-detail-actions button { padding: 8px 11px; font-size: 12px; }
+#speaker-suggestion { margin-right: auto; color: var(--accent); }
 .sensitive-label { color: #f59e0b; font-size: 11px; margin-left: 4px; }
-.voice-catalog-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.voice-catalog-list { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 12px 12px; }
 .voice-profile-chip { display: inline-flex; align-items: center; gap: 7px; padding: 6px 8px 6px 12px; border: 1px solid var(--border); border-radius: 999px; color: var(--muted); font-size: 12px; }
+.voice-profile-use { padding: 0 !important; background: transparent !important; color: inherit; font-size: inherit; }
+.voice-profile-use:hover { color: var(--accent); }
 .voice-profile-delete { min-width: 25px; padding: 2px 7px !important; border-radius: 50%; }
 
 /* Sprecher-Ansicht: links Editor, rechts live-Transkript. */
@@ -529,8 +598,6 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
   .sidebar { width: 180px; }
   .form-grid { grid-template-columns: 1fr; }
   .options-card { grid-column: auto; }
-  .speaker-edit-row { grid-template-columns: 90px 1fr; }
-  .speaker-edit-row button { grid-column: 2; justify-self: end; }
   .speaker-layout { grid-template-columns: 1fr; }
   .library-card { grid-template-columns: 1fr; }
   .library-actions { justify-content: flex-end; }

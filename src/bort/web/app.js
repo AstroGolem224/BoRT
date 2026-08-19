@@ -15,6 +15,9 @@
   let activeBatchId = null;
   let pendingBatchItems = [];
   let voiceCatalogNames = [];
+  let reviewSpeakers = [];
+  let speakerDraftNames = new Map();
+  let activeSpeakerId = null;
 
   // Theme (hell/dunkel) – rein clientseitig via localStorage, Default dunkel.
   const applyTheme = (theme) => {
@@ -132,9 +135,13 @@
       target.append(option);
     });
     const status = $('voice-catalog-status');
+    const profileList = $('voice-catalog-list');
+    profileList.textContent = '';
+    $('voice-catalog-count').textContent = `${profiles.length} ${profiles.length === 1 ? 'Eintrag' : 'Einträge'}`;
     if (catalog.available === false) {
       status.textContent = catalog.error || 'Lokaler Namenskatalog ist nicht verfügbar.';
       status.classList.add('error');
+      $('voice-catalog-panel').open = true;
       $('remember-speakers').disabled = true;
       return;
     }
@@ -143,15 +150,17 @@
     status.textContent = voiceCatalogNames.length
       ? `${voiceCatalogNames.length} lokale Namen als Vorschläge verfügbar.`
       : 'Noch keine Namen gespeichert. Stimmabdrücke werden nur nach ausdrücklicher Aktivierung ergänzt.';
-    const profileList = $('voice-catalog-list');
-    profileList.textContent = '';
     profiles.forEach((profile) => {
       const chip = document.createElement('span');
       chip.className = 'voice-profile-chip';
-      const label = document.createElement('span');
+      const label = document.createElement('button');
+      label.type = 'button';
+      label.className = 'voice-profile-use';
       label.textContent = profile.has_voiceprint
         ? `${profile.name} · Stimme ×${profile.sample_count}`
         : `${profile.name} · nur Name`;
+      label.title = `${profile.name} für den ausgewählten Sprecher verwenden`;
+      label.addEventListener('click', () => assignActiveSpeakerName(profile.name));
       const remove = document.createElement('button');
       remove.type = 'button';
       remove.className = 'voice-profile-delete';
@@ -203,58 +212,90 @@
     renderBatch();
   };
   const renderSpeakers = (speakers) => {
+    reviewSpeakers = speakers;
+    speakerDraftNames = new Map(speakers.map((speaker) => [speaker.id, speaker.name || '']));
     const target = $('speaker-rows');
     target.textContent = '';
     const colors = speakerColorMap();
     speakers.forEach((speaker) => {
-      const row = document.createElement('div');
-      row.className = 'speaker-edit-row';
-      const identity = document.createElement('span');
-      identity.className = 'speaker-id';
-      identity.textContent = speaker.id;
-      // Gleiche Farbe wie das Sprecher-Segment in der Waveform.
+      const choice = document.createElement('button');
+      choice.type = 'button';
+      choice.className = 'speaker-choice';
+      choice.dataset.speakerId = speaker.id;
+      choice.setAttribute('role', 'option');
+      choice.setAttribute('aria-selected', 'false');
+      const dot = document.createElement('span');
+      dot.className = 'speaker-color-dot';
       const color = colors.get(speaker.id);
-      if (color) identity.style.color = color;
-      const input = document.createElement('input');
-      input.type = 'text';
-      input.setAttribute('list', 'voice-profile-names');
-      input.value = speaker.name || '';
-      input.dataset.speakerId = speaker.id;
-      input.addEventListener('input', () => {
-        updateSpeakerTranscriptNames();
-        renderWaveformLabels();
-      });
-      const play = document.createElement('button');
-      play.type = 'button';
-      play.textContent = '▶ Abspielen';
-      play.addEventListener('click', () => playFromSpeaker(speaker.id, speaker.name || speaker.id));
-      row.append(identity, input, play);
-      const suggestion = (speaker.suggestions || [])[0];
-      if (suggestion) {
-        const useSuggestion = document.createElement('button');
-        useSuggestion.type = 'button';
-        useSuggestion.className = 'speaker-suggestion';
-        useSuggestion.textContent = `${suggestion.name} · ${Math.round(suggestion.score * 100)} %`;
-        useSuggestion.title = 'Lokalen Vorschlag übernehmen; wird nicht automatisch angewendet.';
-        useSuggestion.addEventListener('click', () => {
-          input.value = suggestion.name;
-          updateSpeakerTranscriptNames();
-          renderWaveformLabels();
-        });
-        row.append(useSuggestion);
+      if (color) {
+        dot.style.background = color;
+        dot.style.color = color;
       }
-      target.append(row);
+      const name = document.createElement('span');
+      name.className = 'speaker-choice-name';
+      name.textContent = speaker.name || 'Unbenannt';
+      const identity = document.createElement('span');
+      identity.className = 'speaker-choice-id';
+      identity.textContent = speaker.id;
+      choice.append(dot, name, identity);
+      choice.addEventListener('click', () => selectSpeaker(speaker.id, true));
+      target.append(choice);
     });
+    $('speaker-picker-count').textContent = `${speakers.length} Sprecher`;
+    activeSpeakerId = speakers.some((speaker) => speaker.id === activeSpeakerId)
+      ? activeSpeakerId
+      : speakers[0]?.id || null;
     $('speaker-editor').hidden = false;
+    $('speaker-detail').hidden = !activeSpeakerId;
+    if (activeSpeakerId) selectSpeaker(activeSpeakerId);
     renderSpeakerTranscript();
     renderWaveformLabels();
   };
   const currentSpeakerNames = () => {
-    const names = {};
-    document.querySelectorAll('#speaker-rows input[data-speaker-id]').forEach((input) => {
-      names[input.dataset.speakerId] = input.value.trim();
+    return Object.fromEntries(
+      [...speakerDraftNames.entries()].map(([speakerId, name]) => [speakerId, name.trim()]),
+    );
+  };
+  const updateSpeakerChoiceName = (speakerId) => {
+    const choice = document.querySelector(
+      `#speaker-rows .speaker-choice[data-speaker-id="${CSS.escape(speakerId)}"]`,
+    );
+    const name = choice?.querySelector('.speaker-choice-name');
+    if (name) name.textContent = speakerDraftNames.get(speakerId)?.trim() || 'Unbenannt';
+  };
+  const assignActiveSpeakerName = (name) => {
+    if (!activeSpeakerId) return;
+    speakerDraftNames.set(activeSpeakerId, name);
+    $('speaker-name-input').value = name;
+    updateSpeakerChoiceName(activeSpeakerId);
+    updateSpeakerTranscriptNames();
+    renderWaveformLabels();
+  };
+  const selectSpeaker = (speakerId, focusName = false) => {
+    const speaker = reviewSpeakers.find((item) => item.id === speakerId);
+    if (!speaker) return;
+    activeSpeakerId = speakerId;
+    document.querySelectorAll('#speaker-rows .speaker-choice').forEach((choice) => {
+      const selected = choice.dataset.speakerId === speakerId;
+      choice.classList.toggle('active', selected);
+      choice.setAttribute('aria-selected', String(selected));
     });
-    return names;
+    const color = speakerColorMap().get(speakerId);
+    const dot = $('speaker-detail-dot');
+    if (color) {
+      dot.style.background = color;
+      dot.style.color = color;
+    }
+    $('speaker-detail-id').textContent = speakerId;
+    $('speaker-name-input').value = speakerDraftNames.get(speakerId) || '';
+    const suggestion = (speaker.suggestions || [])[0];
+    const suggestionButton = $('speaker-suggestion');
+    suggestionButton.hidden = !suggestion;
+    suggestionButton.textContent = suggestion
+      ? `Vorschlag: ${suggestion.name} · ${Math.round(suggestion.score * 100)} %`
+      : '';
+    $('speaker-detail').hidden = false;
+    if (focusName) $('speaker-name-input').focus();
   };
   const renderSpeakerTranscript = () => {
     const target = $('speaker-transcript');
@@ -275,7 +316,10 @@
       const text = document.createElement('span');
       text.textContent = segment.text || '';
       row.append(timestamp, speaker, text);
-      row.addEventListener('click', () => seekToSegment(segment));
+      row.addEventListener('click', () => {
+        if (segment.speaker_id != null) selectSpeaker(segment.speaker_id);
+        seekToSegment(segment);
+      });
       fragment.append(row);
     });
     target.textContent = '';
@@ -1130,11 +1174,37 @@
       observer.observe($('player-bar'));
     }
   })();
+  $('speaker-name-input').addEventListener('input', (event) => {
+    if (!activeSpeakerId) return;
+    speakerDraftNames.set(activeSpeakerId, event.target.value);
+    updateSpeakerChoiceName(activeSpeakerId);
+    updateSpeakerTranscriptNames();
+    renderWaveformLabels();
+  });
+  $('speaker-suggestion').addEventListener('click', () => {
+    const speaker = reviewSpeakers.find((item) => item.id === activeSpeakerId);
+    const suggestion = (speaker?.suggestions || [])[0];
+    if (!speaker || !suggestion) return;
+    assignActiveSpeakerName(suggestion.name);
+  });
+  $('play-selected-speaker').addEventListener('click', () => {
+    if (!activeSpeakerId) return;
+    const label = speakerDraftNames.get(activeSpeakerId)?.trim() || activeSpeakerId;
+    playFromSpeaker(activeSpeakerId, label);
+  });
+  $('speaker-rows').addEventListener('keydown', (event) => {
+    if (!['ArrowDown', 'ArrowRight', 'ArrowUp', 'ArrowLeft'].includes(event.key)) return;
+    const choices = [...document.querySelectorAll('#speaker-rows .speaker-choice')];
+    const index = choices.indexOf(document.activeElement);
+    if (index < 0 || !choices.length) return;
+    event.preventDefault();
+    const direction = ['ArrowDown', 'ArrowRight'].includes(event.key) ? 1 : -1;
+    const next = choices[(index + direction + choices.length) % choices.length];
+    next.focus();
+    selectSpeaker(next.dataset.speakerId);
+  });
   $('apply-speakers').addEventListener('click', async () => {
-    const renameMap = {};
-    document.querySelectorAll('#speaker-rows input[data-speaker-id]').forEach((input) => {
-      renameMap[input.dataset.speakerId] = input.value;
-    });
+    const renameMap = currentSpeakerNames();
     const result = await api.apply_speaker_rename(reviewId, renameMap);
     if (!result.ok) {
       setViewStatus('speaker-status', result.error || 'Änderungen konnten nicht gespeichert werden.', true);

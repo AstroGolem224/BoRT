@@ -74,10 +74,27 @@
         <div id="speaker-editor" class="speaker-layout" hidden>
           <div class="card">
             <div class="card-heading"><h2><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm7-1a3 3 0 0 0 0-6M2 21v-2a5 5 0 0 1 5-5h4a5 5 0 0 1 5 5v2"/></svg>Sprechernamen</h2><button id="stop-playback" type="button">■ Stop</button></div>
-            <p id="voice-catalog-status" class="muted">Lokaler Namenskatalog wird geladen …</p>
             <datalist id="voice-profile-names"></datalist>
-            <div id="voice-catalog-list" class="voice-catalog-list" aria-label="Lokaler Sprecherkatalog"></div>
-            <div id="speaker-rows" class="speaker-rows"></div>
+            <details id="voice-catalog-panel" class="voice-catalog-panel">
+              <summary><span>Lokaler Namenskatalog</span><span id="voice-catalog-count" class="muted"></span></summary>
+              <p id="voice-catalog-status" class="muted">Lokaler Namenskatalog wird geladen …</p>
+              <div id="voice-catalog-list" class="voice-catalog-list" aria-label="Lokaler Sprecherkatalog"></div>
+            </details>
+            <div class="speaker-picker-heading"><strong>Sprecher auswählen</strong><span id="speaker-picker-count" class="muted"></span></div>
+            <div id="speaker-rows" class="speaker-rows" role="listbox" aria-label="Sprecher auswählen"></div>
+            <div id="speaker-detail" class="speaker-detail" hidden>
+              <div class="speaker-detail-heading">
+                <span id="speaker-detail-dot" class="speaker-color-dot"></span>
+                <strong id="speaker-detail-id"></strong>
+              </div>
+              <label class="speaker-name-field">Anzeigename
+                <input id="speaker-name-input" type="text" list="voice-profile-names" autocomplete="off" placeholder="Name eingeben oder auswählen">
+              </label>
+              <div class="speaker-detail-actions">
+                <button id="speaker-suggestion" type="button" hidden></button>
+                <button id="play-selected-speaker" type="button">▶ Hörprobe</button>
+              </div>
+            </div>
             <div class="actions"><button id="remember-speakers" type="button">Namen lokal merken</button><button id="apply-speakers" class="primary" type="button">Anwenden</button></div>
           </div>
           <div class="card speaker-transcript-card">
