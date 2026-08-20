@@ -18,6 +18,8 @@
   let reviewSpeakers = [];
   let speakerDraftNames = new Map();
   let activeSpeakerId = null;
+  let inlineSpeakerEditor = null;
+  let inlineEditorSpeakerId = null;
 
   // Theme (hell/dunkel) – rein clientseitig via localStorage, Default dunkel.
   const applyTheme = (theme) => {
@@ -153,6 +155,7 @@
       option.value = name;
       target.append(option);
     });
+    refreshSavedNameSelects();
     const status = $('voice-catalog-status');
     const profileList = $('voice-catalog-list');
     profileList.textContent = '';
@@ -282,17 +285,64 @@
     const name = choice?.querySelector('.speaker-choice-name');
     if (name) name.textContent = speakerDraftNames.get(speakerId)?.trim() || 'Unbenannt';
   };
-  const assignActiveSpeakerName = (name) => {
-    if (!activeSpeakerId) return;
-    speakerDraftNames.set(activeSpeakerId, name);
-    $('speaker-name-input').value = name;
-    updateSpeakerChoiceName(activeSpeakerId);
+  const populateSavedNameSelect = (select, currentName = '') => {
+    if (!select) return;
+    const trimmedName = currentName.trim();
+    select.textContent = '';
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = voiceCatalogNames.length
+      ? 'Gespeicherten Namen wählen …'
+      : 'Noch keine Namen gespeichert';
+    select.append(placeholder);
+    voiceCatalogNames.forEach((name) => {
+      const option = document.createElement('option');
+      option.value = name;
+      option.textContent = name;
+      select.append(option);
+    });
+    select.value = voiceCatalogNames.includes(trimmedName) ? trimmedName : '';
+    select.disabled = voiceCatalogNames.length === 0;
+  };
+  const refreshSavedNameSelects = () => {
+    document.querySelectorAll('.saved-speaker-name-select').forEach((select) => {
+      const speakerId = select.dataset.speakerId || activeSpeakerId;
+      populateSavedNameSelect(select, speakerDraftNames.get(speakerId) || '');
+    });
+  };
+  const closeInlineSpeakerEditor = () => {
+    inlineSpeakerEditor?.remove();
+    inlineSpeakerEditor = null;
+    inlineEditorSpeakerId = null;
+  };
+  const updateSpeakerName = (speakerId, name, sourceInput = null) => {
+    if (!speakerId) return;
+    speakerDraftNames.set(speakerId, name);
+    updateSpeakerChoiceName(speakerId);
+    if (activeSpeakerId === speakerId) {
+      if ($('speaker-name-input') !== sourceInput) $('speaker-name-input').value = name;
+      $('speaker-saved-name').dataset.speakerId = speakerId;
+      populateSavedNameSelect($('speaker-saved-name'), name);
+    }
+    if (inlineSpeakerEditor && inlineEditorSpeakerId === speakerId) {
+      const inlineInput = inlineSpeakerEditor.querySelector('.inline-speaker-name');
+      if (inlineInput && inlineInput !== sourceInput) inlineInput.value = name;
+      populateSavedNameSelect(
+        inlineSpeakerEditor.querySelector('.saved-speaker-name-select'),
+        name,
+      );
+    }
     updateSpeakerTranscriptNames();
     renderWaveformLabels();
+  };
+  const assignActiveSpeakerName = (name) => {
+    if (!activeSpeakerId) return;
+    updateSpeakerName(activeSpeakerId, name);
   };
   const selectSpeaker = (speakerId, focusName = false) => {
     const speaker = reviewSpeakers.find((item) => item.id === speakerId);
     if (!speaker) return;
+    if (inlineEditorSpeakerId && inlineEditorSpeakerId !== speakerId) closeInlineSpeakerEditor();
     activeSpeakerId = speakerId;
     document.querySelectorAll('#speaker-rows .speaker-choice').forEach((choice) => {
       const selected = choice.dataset.speakerId === speakerId;
@@ -307,6 +357,8 @@
     }
     $('speaker-detail-id').textContent = speakerId;
     $('speaker-name-input').value = speakerDraftNames.get(speakerId) || '';
+    $('speaker-saved-name').dataset.speakerId = speakerId;
+    populateSavedNameSelect($('speaker-saved-name'), speakerDraftNames.get(speakerId) || '');
     const suggestion = (speaker.suggestions || [])[0];
     const suggestionButton = $('speaker-suggestion');
     suggestionButton.hidden = !suggestion;
@@ -316,9 +368,106 @@
     $('speaker-detail').hidden = false;
     if (focusName) $('speaker-name-input').focus();
   };
+  const openInlineSpeakerEditor = (speakerId, row) => {
+    if (!speakerId || !row) return;
+    if (inlineSpeakerEditor && inlineEditorSpeakerId === speakerId
+        && inlineSpeakerEditor.parentElement === row) {
+      inlineSpeakerEditor.querySelector('.inline-speaker-name')?.focus();
+      return;
+    }
+    closeInlineSpeakerEditor();
+    selectSpeaker(speakerId);
+    const speaker = reviewSpeakers.find((item) => item.id === speakerId);
+    const color = speakerColorMap().get(speakerId);
+    const editor = document.createElement('div');
+    editor.className = 'inline-speaker-editor';
+    editor.setAttribute('role', 'group');
+    editor.setAttribute('aria-label', `Sprecher ${speakerId} benennen`);
+    editor.addEventListener('click', (event) => event.stopPropagation());
+    editor.addEventListener('keydown', (event) => event.stopPropagation());
+
+    const heading = document.createElement('div');
+    heading.className = 'inline-speaker-heading';
+    const dot = document.createElement('span');
+    dot.className = 'speaker-color-dot';
+    if (color) {
+      dot.style.background = color;
+      dot.style.color = color;
+    }
+    const title = document.createElement('strong');
+    title.textContent = `${speakerId} überall benennen`;
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'inline-speaker-close';
+    close.textContent = '×';
+    close.title = 'Editor schließen';
+    close.setAttribute('aria-label', close.title);
+    close.addEventListener('click', closeInlineSpeakerEditor);
+    heading.append(dot, title, close);
+
+    const fields = document.createElement('div');
+    fields.className = 'inline-speaker-fields';
+    const inputLabel = document.createElement('label');
+    inputLabel.textContent = 'Anzeigename';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'inline-speaker-name';
+    input.setAttribute('list', 'voice-profile-names');
+    input.autocomplete = 'off';
+    input.placeholder = 'Name eingeben';
+    input.value = speakerDraftNames.get(speakerId) || '';
+    input.addEventListener('input', (event) => {
+      updateSpeakerName(speakerId, event.target.value, event.target);
+    });
+    inputLabel.append(input);
+
+    const savedLabel = document.createElement('label');
+    savedLabel.textContent = 'Gespeicherter Name';
+    const saved = document.createElement('select');
+    saved.className = 'saved-speaker-name-select';
+    saved.dataset.speakerId = speakerId;
+    populateSavedNameSelect(saved, speakerDraftNames.get(speakerId) || '');
+    saved.addEventListener('change', (event) => {
+      if (event.target.value) updateSpeakerName(speakerId, event.target.value);
+    });
+    savedLabel.append(saved);
+    fields.append(inputLabel, savedLabel);
+
+    const actions = document.createElement('div');
+    actions.className = 'inline-speaker-actions';
+    const suggestion = (speaker?.suggestions || [])[0];
+    if (suggestion) {
+      const suggestionButton = document.createElement('button');
+      suggestionButton.type = 'button';
+      suggestionButton.className = 'inline-speaker-suggestion';
+      suggestionButton.textContent = `Vorschlag: ${suggestion.name} · ${Math.round(suggestion.score * 100)} %`;
+      suggestionButton.addEventListener('click', () => updateSpeakerName(speakerId, suggestion.name));
+      actions.append(suggestionButton);
+    }
+    const play = document.createElement('button');
+    play.type = 'button';
+    play.textContent = '▶ Hörprobe';
+    play.addEventListener('click', () => {
+      const label = speakerDraftNames.get(speakerId)?.trim() || speakerId;
+      playFromSpeaker(speakerId, label);
+    });
+    const done = document.createElement('button');
+    done.type = 'button';
+    done.className = 'primary';
+    done.textContent = 'Fertig';
+    done.addEventListener('click', closeInlineSpeakerEditor);
+    actions.append(play, done);
+    editor.append(heading, fields, actions);
+    inlineSpeakerEditor = editor;
+    inlineEditorSpeakerId = speakerId;
+    row.append(editor);
+    input.focus();
+    input.select();
+  };
   const renderSpeakerTranscript = () => {
     const target = $('speaker-transcript');
     if (!target) return;
+    closeInlineSpeakerEditor();
     const names = currentSpeakerNames();
     const fragment = document.createDocumentFragment();
     reviewSegments.forEach((segment) => {
@@ -328,10 +477,22 @@
       const timestamp = document.createElement('span');
       timestamp.className = 'timestamp';
       timestamp.textContent = `${formatTime(segment.start)} – ${formatTime(segment.end)}`;
-      const speaker = document.createElement('span');
-      speaker.className = 'speaker';
       const mapped = segment.speaker_id != null ? names[segment.speaker_id] : '';
-      speaker.textContent = mapped || segment.speaker_id || 'Sprecher';
+      const displayName = mapped || segment.speaker_id || 'Sprecher';
+      const speaker = document.createElement(segment.speaker_id != null ? 'button' : 'span');
+      speaker.className = segment.speaker_id != null
+        ? 'speaker speaker-inline-button'
+        : 'speaker';
+      speaker.textContent = displayName;
+      if (segment.speaker_id != null) {
+        speaker.type = 'button';
+        speaker.title = `${displayName} überall ändern`;
+        speaker.setAttribute('aria-label', `${displayName} – Sprechernamen ändern`);
+        speaker.addEventListener('click', (event) => {
+          event.stopPropagation();
+          openInlineSpeakerEditor(segment.speaker_id, row);
+        });
+      }
       const text = document.createElement('span');
       text.textContent = segment.text || '';
       row.append(timestamp, speaker, text);
@@ -358,7 +519,12 @@
       const speaker = row.querySelector('.speaker');
       if (!speaker) return;
       const speakerId = row.dataset.speakerId;
-      speaker.textContent = names[speakerId] || speakerId || 'Sprecher';
+      const displayName = names[speakerId] || speakerId || 'Sprecher';
+      speaker.textContent = displayName;
+      if (speaker.matches('button')) {
+        speaker.title = `${displayName} überall ändern`;
+        speaker.setAttribute('aria-label', `${displayName} – Sprechernamen ändern`);
+      }
     });
   };
 
@@ -643,7 +809,6 @@
       // Alte v1-Reviews mit doppelten Namen: Segmente dieser ID sind kollabiert.
       setViewStatus('speaker-status', `Keine Segmente für ${label} (${speakerId}) — Altdatei mit doppelten Namen?`);
     }
-    scrollTranscriptToSpeaker(speakerId);
   };
 
   const renderBatchItems = (items) => {
@@ -1213,10 +1378,11 @@
   })();
   $('speaker-name-input').addEventListener('input', (event) => {
     if (!activeSpeakerId) return;
-    speakerDraftNames.set(activeSpeakerId, event.target.value);
-    updateSpeakerChoiceName(activeSpeakerId);
-    updateSpeakerTranscriptNames();
-    renderWaveformLabels();
+    updateSpeakerName(activeSpeakerId, event.target.value, event.target);
+  });
+  $('speaker-saved-name').addEventListener('change', (event) => {
+    if (!activeSpeakerId || !event.target.value) return;
+    updateSpeakerName(activeSpeakerId, event.target.value);
   });
   $('speaker-suggestion').addEventListener('click', () => {
     const speaker = reviewSpeakers.find((item) => item.id === activeSpeakerId);
@@ -1228,6 +1394,9 @@
     if (!activeSpeakerId) return;
     const label = speakerDraftNames.get(activeSpeakerId)?.trim() || activeSpeakerId;
     playFromSpeaker(activeSpeakerId, label);
+  });
+  $('show-selected-speaker').addEventListener('click', () => {
+    if (activeSpeakerId) scrollTranscriptToSpeaker(activeSpeakerId);
   });
   $('speaker-rows').addEventListener('keydown', (event) => {
     if (!['ArrowDown', 'ArrowRight', 'ArrowUp', 'ArrowLeft'].includes(event.key)) return;

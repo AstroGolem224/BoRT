@@ -79,11 +79,19 @@
                 <span id="speaker-detail-dot" class="speaker-color-dot"></span>
                 <strong id="speaker-detail-id"></strong>
               </div>
-              <label class="speaker-name-field">Anzeigename
-                <input id="speaker-name-input" type="text" list="voice-profile-names" autocomplete="off" placeholder="Name eingeben oder auswählen">
-              </label>
+              <div class="speaker-name-grid">
+                <label class="speaker-name-field">Anzeigename
+                  <input id="speaker-name-input" type="text" list="voice-profile-names" autocomplete="off" placeholder="Name eingeben">
+                </label>
+                <label class="speaker-name-field">Gespeicherter Name
+                  <select id="speaker-saved-name" class="saved-speaker-name-select">
+                    <option value="">Gespeicherten Namen wählen …</option>
+                  </select>
+                </label>
+              </div>
               <div class="speaker-detail-actions">
                 <button id="speaker-suggestion" type="button" hidden></button>
+                <button id="show-selected-speaker" type="button">Im Transkript zeigen</button>
                 <button id="play-selected-speaker" type="button">▶ Hörprobe</button>
               </div>
             </div>
@@ -94,6 +102,7 @@
               <h2><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h14v18H5zM8 8h8M8 12h8M8 16h5"/></svg>Transkript</h2>
               <span id="speaker-transcript-count" class="muted"></span>
             </div>
+            <p class="muted transcript-edit-hint">Sprechernamen anklicken, um sie direkt hier zu ändern oder einen gespeicherten Namen auszuwählen.</p>
             <div id="speaker-transcript" class="speaker-transcript"></div>
           </div>
         </div>
