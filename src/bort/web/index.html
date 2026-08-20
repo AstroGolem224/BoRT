@@ -17,6 +17,7 @@
         <button class="nav-item" data-view="batch"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v5H4zM4 14h16v5H4zM7 7.5h.01M7 16.5h.01"/></svg><span>Batch</span></button>
         <button class="nav-item" data-view="library"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2 2h9v11H3zM7 13h10M7 17h7"/></svg><span>Bibliothek</span></button>
         <button class="nav-item" data-view="speakers"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 20v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 10a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm7-1a3 3 0 0 0 0-6m2 11a4 4 0 0 1 4 4v2"/></svg><span>Sprecher</span></button>
+        <button class="nav-item" data-view="settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5zM19 12l2-1-2-4-2 .5-1.5-1.5.5-2h-4l-.5 2L9 7.5 7 7 5 11l2 1-2 1 2 4 2-.5 1.5 1.5-.5 2h4l.5-2 1.5-1.5 2 .5 2-4z"/></svg><span>Optionen</span></button>
       </nav>
       <p class="sidebar-foot"><span class="status-dot"></span>Lokale Transkription</p>
     </aside>
@@ -24,24 +25,15 @@
       <section id="transcribe" class="view active" aria-labelledby="transcribe-title">
         <header><h1 id="transcribe-title">Transkribieren</h1><p>Audio auswählen und lokal verarbeiten.</p></header>
         <p id="status" class="status" role="status">Bereit.</p>
+        <div class="global-settings-strip"><span><strong>Globale Optionen</strong><span class="global-settings-summary"></span></span><button class="open-settings" type="button">⚙ Ändern</button></div>
         <div class="form-grid">
-          <div class="card files-card">
+          <div class="card files-card transcribe-files-card">
             <h2><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2 2h9v11H3z"/></svg>Dateien</h2>
-            <label>Audio-Datei <span class="required">*</span><span class="picker"><input id="audio-path" readonly><button id="pick-audio" type="button">Auswählen</button></span></label>
-            <label>Marker-Datei <span class="muted">optional</span><span class="picker"><input id="marker-path" readonly><button id="pick-marker" type="button">Auswählen</button></span></label>
-            <label>Ausgabeordner <span class="required">*</span><span class="picker"><input id="output-path" readonly><button id="pick-output" type="button">Auswählen</button><button id="open-output" type="button" title="Im Dateimanager öffnen">📂 Öffnen</button></span></label>
-            <label class="check"><input id="colocate" type="checkbox" checked> Neben der Audio-Datei speichern</label>
-          </div>
-          <div class="card">
-            <h2><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-4-8v4m8-4v4M6 14a6 6 0 0 0 12 0"/></svg>Transkription</h2>
-            <div class="two-cols"><label>Backend<select id="backend"><option value="whispercpp">whisper.cpp (CPU)</option><option value="whisperx">whisperX (GPU + Diarization)</option></select></label><label>Sprache<select id="language"><option value="auto">Automatisch</option><option value="de">Deutsch</option><option value="en">Englisch</option><option value="fr">Französisch</option><option value="es">Spanisch</option><option value="it">Italienisch</option><option value="pt">Portugiesisch</option><option value="nl">Niederländisch</option><option value="pl">Polnisch</option><option value="ru">Russisch</option><option value="zh">Chinesisch</option><option value="ja">Japanisch</option></select></label></div>
-            <div id="whispercpp-options"><label>GGML-Modell <span class="required">*</span><span class="picker"><input id="model-path" readonly><button id="pick-model" type="button">Auswählen</button></span></label><label>Aufgabe<select id="task"><option value="transcribe">Originalsprache beibehalten</option><option value="translate">Nach Englisch übersetzen</option></select></label></div>
-            <div id="whisperx-options" hidden><div class="two-cols"><label>WhisperX-Modell<select id="whisperx-model"><option>large-v3-turbo</option><option>large-v3</option><option>large-v2</option><option>medium</option><option>small</option><option>base</option><option>tiny</option></select></label><label>Leistungsprofil<select id="performance-profile"><option value="fast">Schnell · Beam 1</option><option value="balanced" selected>Ausgewogen · Beam 3</option><option value="quality">Maximale Qualität · Beam 5</option></select></label></div><div class="two-cols"><label>Min. Sprecher<input id="min-speakers" type="number" min="1" inputmode="numeric"></label><label>Max. Sprecher<input id="max-speakers" type="number" min="1" inputmode="numeric"></label></div></div>
-          </div>
-          <div class="card options-card">
-            <h2><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5zM19 12l2-1-2-4-2 .5-1.5-1.5.5-2h-4l-.5 2L9 7.5 7 7 5 11l2 1-2 1 2 4 2-.5 1.5 1.5-.5 2h4l.5-2 1.5-1.5 2 .5 2-4z"/></svg>Ausgabe &amp; Optionen</h2>
-            <fieldset><legend>Formate <span class="required">*</span></legend><label class="check"><input type="checkbox" name="format" value="txt" checked> TXT</label><label class="check"><input type="checkbox" name="format" value="md"> Markdown</label><label class="check"><input type="checkbox" name="format" value="csv"> CSV</label><label class="check"><input type="checkbox" name="format" value="tsv"> TSV</label></fieldset>
-            <label class="check"><input id="keep-wav" type="checkbox"> WAV behalten</label><label class="check"><input id="verbose" type="checkbox"> Ausführliches Protokoll</label><div id="diarize-options"><label class="check"><input id="no-diarize" type="checkbox"> Keine Sprechertrennung</label><label class="check"><input id="auto-markers" type="checkbox" checked> Marker automatisch speichern</label><label class="check"><input id="voice-profiles" type="checkbox"> Stimmprofile lokal erfassen <span class="sensitive-label">biometrisch</span></label><p class="muted">Ausgeschaltet: nur Namen. Eingeschaltet: Stimmabdrücke werden lokal in der Review zwischengespeichert und erst mit „Namen lokal merken“ in den Katalog übernommen.</p></div>
+            <div class="two-cols">
+              <label>Audio-Datei <span class="required">*</span><span class="picker"><input id="audio-path" readonly><button id="pick-audio" type="button">Auswählen</button></span></label>
+              <label>Marker-Datei <span class="muted">optional</span><span class="picker"><input id="marker-path" readonly><button id="pick-marker" type="button">Auswählen</button></span></label>
+            </div>
+            <p id="output-mode-hint" class="muted compact-hint"></p>
           </div>
         </div>
         <div class="card run-card"><div class="progress-track" aria-label="Fortschritt"><div id="progress-bar"></div></div><div class="progress-line"><span id="progress-label">Bereit</span><span id="progress-value">0 %</span></div><button id="start" class="primary" type="button">Transkription starten</button></div>
@@ -130,6 +122,7 @@
       <section id="batch" class="view" aria-labelledby="batch-title">
         <header><h1 id="batch-title">Batch</h1><p>Neue Aufnahmen aus einem Sync-Ordner nacheinander verarbeiten.</p></header>
         <p id="batch-status" class="status" role="status">Sync-Ordner auswählen und scannen.</p>
+        <div class="global-settings-strip"><span><strong>Globale Optionen</strong><span class="global-settings-summary"></span></span><button class="open-settings" type="button">⚙ Ändern</button></div>
         <div class="card">
           <h2><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2 2h9v11H3z"/></svg>Quelle</h2>
           <label>Sync-Ordner<span class="picker"><input id="watch-path" readonly><button id="pick-watch" type="button">Sync-Ordner wählen</button><button id="scan-batch" type="button">Scannen</button></span></label>
@@ -145,6 +138,31 @@
           <div class="actions"><button id="cancel-batch" type="button" disabled>Abbrechen</button><button id="start-batch" class="primary" type="button" disabled>Alle verarbeiten</button></div>
         </div>
         <div class="card logs-card"><h2>Batch-Protokoll</h2><pre id="batch-log" aria-live="polite"></pre></div>
+      </section>
+      <section id="settings" class="view" aria-labelledby="settings-title">
+        <header><h1 id="settings-title">Transkriptionsoptionen</h1><p>Zentrale Voreinstellungen für die gesamte App.</p></header>
+        <p id="settings-status" class="status" role="status">Änderungen werden automatisch gespeichert und beim nächsten Einzel- oder Batchlauf verwendet.</p>
+        <div class="form-grid settings-grid">
+          <div class="card">
+            <h2><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-4-8v4m8-4v4M6 14a6 6 0 0 0 12 0"/></svg>Engine &amp; Sprache</h2>
+            <div class="two-cols"><label>Backend<select id="backend"><option value="whispercpp">whisper.cpp (CPU)</option><option value="whisperx">whisperX (GPU + Diarization)</option></select></label><label>Sprache<select id="language"><option value="auto">Automatisch</option><option value="de">Deutsch</option><option value="en">Englisch</option><option value="fr">Französisch</option><option value="es">Spanisch</option><option value="it">Italienisch</option><option value="pt">Portugiesisch</option><option value="nl">Niederländisch</option><option value="pl">Polnisch</option><option value="ru">Russisch</option><option value="zh">Chinesisch</option><option value="ja">Japanisch</option></select></label></div>
+            <div id="whispercpp-options"><label>GGML-Modell <span class="required">*</span><span class="picker"><input id="model-path" readonly><button id="pick-model" type="button">Auswählen</button></span></label><label>Aufgabe<select id="task"><option value="transcribe">Originalsprache beibehalten</option><option value="translate">Nach Englisch übersetzen</option></select></label></div>
+            <div id="whisperx-options" hidden><div class="two-cols"><label>WhisperX-Modell<select id="whisperx-model"><option>large-v3-turbo</option><option>large-v3</option><option>large-v2</option><option>medium</option><option>small</option><option>base</option><option>tiny</option></select></label><label>Leistungsprofil<select id="performance-profile"><option value="fast">Schnell · Beam 1</option><option value="balanced" selected>Ausgewogen · Beam 3</option><option value="quality">Maximale Qualität · Beam 5</option></select></label></div><div class="two-cols"><label>Min. Sprecher<input id="min-speakers" type="number" min="1" max="99" inputmode="numeric"></label><label>Max. Sprecher<input id="max-speakers" type="number" min="1" max="99" inputmode="numeric"></label></div></div>
+          </div>
+          <div class="card">
+            <h2><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h14v18H5zM8 8h8M8 12h8M8 16h5"/></svg>Ausgabe</h2>
+            <fieldset><legend>Formate <span class="required">*</span></legend><label class="check"><input type="checkbox" name="format" value="txt" checked> TXT</label><label class="check"><input type="checkbox" name="format" value="md"> Markdown</label><label class="check"><input type="checkbox" name="format" value="csv"> CSV</label><label class="check"><input type="checkbox" name="format" value="tsv"> TSV</label></fieldset>
+            <label class="check"><input id="colocate" type="checkbox" checked> Neben der Audio-Datei speichern</label>
+            <label>Globaler Ausgabeordner<span class="picker"><input id="output-path" readonly><button id="pick-output" type="button">Auswählen</button><button id="open-output" type="button" title="Im Dateimanager öffnen">📂 Öffnen</button></span></label>
+            <label class="check"><input id="keep-wav" type="checkbox"> Konvertierte WAV-Datei behalten</label>
+            <label class="check"><input id="verbose" type="checkbox"> Ausführliches Protokoll</label>
+          </div>
+          <div id="diarize-options" class="card settings-wide-card">
+            <h2><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 20v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 10a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm2 2h9v8h-9z"/></svg>Sprechererkennung &amp; Datenschutz</h2>
+            <div class="settings-check-grid"><label class="check"><input id="no-diarize" type="checkbox"> Keine Sprechertrennung</label><label class="check"><input id="auto-markers" type="checkbox" checked> Marker automatisch speichern</label><label class="check"><input id="voice-profiles" type="checkbox"> Stimmprofile lokal erfassen <span class="sensitive-label">biometrisch</span></label></div>
+            <p class="muted">Ausgeschaltet werden nur Namen gespeichert. Mit aktivierter Option bleiben Stimmabdrücke lokal und werden erst über „Namen lokal merken“ in den Katalog übernommen.</p>
+          </div>
+        </div>
       </section>
     </main>
   </div>

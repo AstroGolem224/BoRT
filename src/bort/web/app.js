@@ -101,10 +101,28 @@
     colocate: $('colocate').checked, voice_profiles: $('voice-profiles').checked,
     performance_profile: $('performance-profile').value,
   });
+  const renderGlobalSettingsSummary = () => {
+    const whisperx = $('backend').value === 'whisperx';
+    const backend = whisperx ? 'whisperX / GPU' : 'whisper.cpp / CPU';
+    const language = $('language').selectedOptions[0]?.textContent || 'Automatisch';
+    const modelPath = $('model-path').value.split(/[\\/]/).pop();
+    const model = whisperx ? $('whisperx-model').value : modelPath || 'kein Modell';
+    const formats = selectedFormats().map((item) => item.toUpperCase()).join(', ') || 'kein Format';
+    const storage = $('colocate').checked ? 'neben Audio' : 'Ausgabeordner';
+    const summary = `${backend} · ${language} · ${model} · ${formats} · ${storage}`;
+    document.querySelectorAll('.global-settings-summary').forEach((node) => {
+      node.textContent = summary;
+      node.title = summary;
+    });
+  };
   const toggleColocate = () => {
     const active = $('colocate').checked;
     $('output-path').disabled = active;
     $('pick-output').disabled = active;
+    $('open-output').disabled = active;
+    $('output-mode-hint').textContent = active
+      ? 'Globale Option aktiv: Die Ausgabe wird neben der Audio-Datei gespeichert.'
+      : 'Globale Option aktiv: Einzeltranskription und Batch verwenden den zentralen Ausgabeordner.';
   };
   const applyInitialState = (state) => {
     Object.entries(state.paths || {}).forEach(([key, value]) => setPath(key, value));
@@ -122,6 +140,7 @@
     }
     toggleBackend();
     toggleColocate();
+    renderGlobalSettingsSummary();
     applyVoiceCatalog(state.voice_catalog || {});
   };
   const applyVoiceCatalog = (catalog) => {
@@ -987,31 +1006,49 @@
       setStatus('Der Batch läuft im Hintergrund weiter. Status und Abbruch bleiben in der Batch-Ansicht verfügbar.');
     }
   }));
-  $('backend').addEventListener('change', toggleBackend);
-  // Ausgabeoptionen sofort persistieren, nicht erst beim Transkriptions-Start.
-  const persistOutputOptions = () => {
+  document.querySelectorAll('.open-settings').forEach((button) => {
+    button.addEventListener('click', () => activateView('settings'));
+  });
+  // Alle Transkriptionsoptionen sofort appweit persistieren.
+  const persistGlobalOptions = () => {
+    renderGlobalSettingsSummary();
     if (!api) return;
-    toggleVoiceProfiles();
     const s = formSettings();
-    api.save_output_options({
-      formats: s.formats, keep_wav: s.keep_wav, verbose: s.verbose,
-      no_diarize: s.no_diarize, auto_markers: s.auto_markers, colocate: s.colocate,
-      voice_profiles: s.voice_profiles,
-      performance_profile: s.performance_profile,
-    }).catch(() => {});
+    api.save_output_options(s).then((result) => {
+      setViewStatus(
+        'settings-status',
+        result.ok
+          ? 'Gespeichert. Einzeltranskription und Batch verwenden diese Optionen beim nächsten Lauf.'
+          : result.error || 'Optionen konnten nicht gespeichert werden.',
+        !result.ok,
+      );
+    }).catch(() => {
+      setViewStatus('settings-status', 'Optionen konnten nicht gespeichert werden.', true);
+    });
   };
-  document.querySelectorAll('input[name="format"], #keep-wav, #verbose, #no-diarize, #auto-markers, #colocate, #voice-profiles, #performance-profile')
-    .forEach((input) => input.addEventListener('change', persistOutputOptions));
-  $('colocate').addEventListener('change', toggleColocate);
-  $('no-diarize').addEventListener('change', toggleVoiceProfiles);
+  document.querySelectorAll(
+    '#backend, #language, #task, #whisperx-model, #performance-profile, '
+    + '#min-speakers, #max-speakers, input[name="format"], #keep-wav, #verbose, '
+    + '#no-diarize, #auto-markers, #colocate, #voice-profiles',
+  ).forEach((input) => input.addEventListener('change', () => {
+    if (input.id === 'backend') toggleBackend();
+    if (input.id === 'colocate') toggleColocate();
+    if (input.id === 'no-diarize') toggleVoiceProfiles();
+    persistGlobalOptions();
+  }));
   [['audio', 'pick-audio'], ['marker', 'pick-marker'], ['output', 'pick-output'], ['model', 'pick-model']]
     .forEach(([kind, id]) => $(id).addEventListener('click', async () => {
       const result = await api[`pick_${kind}`]();
-      if (result && result.ok) setPath(kind, result.path);
+      if (result && result.ok) {
+        setPath(kind, result.path);
+        if (kind === 'model') renderGlobalSettingsSummary();
+      }
     }));
   $('open-output').addEventListener('click', async () => {
     const result = await api.open_output_dir($('colocate').checked);
-    if (result && !result.ok) setStatus(result.error || 'Ordner konnte nicht geöffnet werden.', true);
+    if (result && !result.ok) {
+      setViewStatus('settings-status', result.error || 'Ordner konnte nicht geöffnet werden.', true);
+    }
   });
   $('start').addEventListener('click', async () => {
     $('preview').hidden = true;

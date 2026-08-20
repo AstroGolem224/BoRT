@@ -64,26 +64,46 @@ def test_save_output_options_persists_immediately(tmp_path):
     bridge = _bridge_with_config(tmp_path)
     result = bridge.save_output_options(
         {
+            "backend": "whisperx",
+            "language": "de",
+            "task": "transcribe",
+            "whisperx_model": "medium",
+            "min_speakers": "2",
+            "max_speakers": "8",
             "formats": ["md", "tsv", "exe"],
             "keep_wav": True,
             "verbose": False,
             "no_diarize": True,
             "auto_markers": False,
             "performance_profile": "fast",
+            "colocate": False,
         }
     )
     assert result == {"ok": True}
 
     reloaded = Bridge(config=Config(path=tmp_path / "settings.json"))
     settings = reloaded.initial_state()["settings"]
+    assert settings["backend"] == "whisperx"
+    assert settings["language"] == "de"
+    assert settings["task"] == "transcribe"
+    assert settings["whisperx_model"] == "medium"
+    assert settings["min_speakers"] == "2"
+    assert settings["max_speakers"] == "8"
     assert settings["formats"] == ["md", "tsv"]  # "exe" verworfen
     assert settings["keep_wav"] is True
     assert settings["no_diarize"] is True
     assert settings["auto_markers"] is False
     assert settings["performance_profile"] == "fast"
-    assert settings["colocate"] is True
+    assert settings["colocate"] is False
 
 
 def test_save_output_options_rejects_non_dict(tmp_path):
     bridge = _bridge_with_config(tmp_path)
     assert bridge.save_output_options("quatsch")["ok"] is False
+
+
+def test_save_output_options_rejects_invalid_global_values(tmp_path):
+    bridge = _bridge_with_config(tmp_path)
+
+    assert bridge.save_output_options({"backend": "cloud"})["ok"] is False
+    assert bridge.save_output_options({"min_speakers": "hundert"})["ok"] is False

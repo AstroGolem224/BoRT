@@ -149,7 +149,27 @@ h2 svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-wid
 
 /* --- Karten --- */
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 26px; }
-.options-card { grid-column: span 2; }
+.transcribe-files-card, .settings-wide-card { grid-column: span 2; }
+.global-settings-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 48px;
+  margin: -6px 0 18px;
+  padding: 9px 11px 9px 15px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-sink);
+  color: var(--muted);
+  font-size: 12px;
+}
+.global-settings-strip > span { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; min-width: 0; }
+.global-settings-strip strong { color: var(--text); font-size: 12px; }
+.global-settings-summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.global-settings-strip button { flex: none; padding: 7px 10px; font-size: 12px; }
+.settings-check-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px 24px; }
+.settings-check-grid .check { margin: 0; }
 
 .card {
   border-radius: var(--radius);
@@ -165,6 +185,7 @@ h2 svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-wid
 /* --- Formulare --- */
 label { display: grid; gap: 8px; margin: 15px 0; color: var(--muted); font-size: 13px; }
 label:first-of-type { margin-top: 0; }
+.compact-hint { margin: -5px 0 0; font-size: 12px; }
 .required { color: var(--accent); }
 .picker { display: flex; gap: 11px; }
 
@@ -597,7 +618,8 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 @media (max-width: 950px) {
   .sidebar { width: 180px; }
   .form-grid { grid-template-columns: 1fr; }
-  .options-card { grid-column: auto; }
+  .transcribe-files-card, .settings-wide-card { grid-column: auto; }
+  .settings-check-grid { grid-template-columns: 1fr; }
   .speaker-layout { grid-template-columns: 1fr; }
   .library-card { grid-template-columns: 1fr; }
   .library-actions { justify-content: flex-end; }

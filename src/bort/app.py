@@ -535,7 +535,7 @@ class Bridge:
     ALLOWED_FORMATS = ("txt", "md", "csv", "tsv")
 
     def save_output_options(self, options: Any) -> dict[str, Any]:
-        """Persistiert Format- und Options-Häkchen sofort bei Auswahl."""
+        """Persistiert die globalen Transkriptionsoptionen sofort bei Auswahl."""
         if not isinstance(options, dict):
             return {"ok": False, "error": "Ungültige Optionen."}
         formats = options.get("formats")
@@ -543,9 +543,46 @@ class Bridge:
             item for item in (formats if isinstance(formats, list) else [])
             if item in self.ALLOWED_FORMATS
         ]
+        allowed_languages = {
+            "auto", "de", "en", "fr", "es", "it", "pt", "nl", "pl", "ru", "zh", "ja"
+        }
+        choices = {
+            "backend": {"whispercpp", "whisperx"},
+            "language": allowed_languages,
+            "task": {"transcribe", "translate"},
+            "whisperx_model": {
+                "large-v3", "large-v3-turbo", "large-v2", "medium", "small", "base", "tiny"
+            },
+        }
+        for key, allowed in choices.items():
+            if key in options and options.get(key) not in allowed:
+                return {"ok": False, "error": f"Ungültige Option: {key}."}
+
+        speaker_counts: dict[str, str] = {}
+        for key in ("min_speakers", "max_speakers"):
+            if key not in options:
+                continue
+            raw = options.get(key)
+            if raw in {None, ""}:
+                speaker_counts[key] = ""
+                continue
+            try:
+                number = int(raw)
+            except (TypeError, ValueError):
+                return {"ok": False, "error": f"Ungültige Option: {key}."}
+            if not 1 <= number <= 99:
+                return {"ok": False, "error": f"Ungültige Option: {key}."}
+            speaker_counts[key] = str(number)
 
         def update() -> None:
             self.config.set("last_formats", ",".join(cleaned))
+            for key in ("backend", "language", "whisperx_model"):
+                if key in options:
+                    self.config.set(f"last_{key}", options[key])
+            if "task" in options:
+                self.config.set("last_task_display", options["task"])
+            for key, value in speaker_counts.items():
+                self.config.set(f"last_{key}", value)
             for key in (
                 "keep_wav",
                 "verbose",
