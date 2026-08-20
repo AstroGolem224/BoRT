@@ -46,6 +46,9 @@ Alle wesentlichen Änderungen an BoRT werden in dieser Datei dokumentiert.
 
 ### Globale Optionen und Design
 
+- Die Bibliothek bietet eine kompakte „Alle auswählen“-/„Auswahl aufheben“-Leiste
+  mit Auswahlzähler. „Alle auswählen“ berücksichtigt nur Aufnahmen mit
+  exportierbaren Transkripten.
 - Transkriptionsoptionen befinden sich in einem eigenen App-Reiter und gelten
   gemeinsam für Einzeltranskription und Batch.
 - Die aktiven globalen Optionen werden in Transkribieren und Batch kompakt

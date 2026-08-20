@@ -879,6 +879,8 @@
     });
   };
   const librarySelection = new Set();
+  const librarySelectableIds = new Set();
+  let libraryRenderedItemCount = 0;
   let mailPasswordStored = false;
   // Ein geteilter Player für alle Bibliothekskarten; es spielt immer nur eine.
   let libraryActive = null; // { itemId, playButton, playhead, waveWrap }
@@ -906,12 +908,26 @@
   };
   const updateExportButton = () => {
     const count = librarySelection.size;
+    const selectableCount = librarySelectableIds.size;
     const button = $('export-selection');
     button.textContent = `Auswahl exportieren (${count})`;
     button.disabled = count === 0;
     const send = $('export-send');
     send.textContent = `Exportieren & senden (${count})`;
     send.disabled = count === 0;
+    $('library-selection-toolbar').hidden = libraryRenderedItemCount === 0;
+    $('library-selection-summary').textContent = `${count} von ${selectableCount} exportierbaren Aufnahmen ausgewählt`;
+    $('library-select-all').disabled = selectableCount === 0 || count === selectableCount;
+    $('library-select-none').disabled = count === 0;
+  };
+  const setAllLibraryItemsSelected = (selected) => {
+    document.querySelectorAll('.library-select:not(:disabled)').forEach((checkbox) => {
+      checkbox.checked = selected;
+      const itemId = checkbox.dataset.itemId;
+      if (selected) librarySelection.add(itemId);
+      else librarySelection.delete(itemId);
+    });
+    updateExportButton();
   };
   const updateMailPasswordRow = () => {
     $('mail-password-row').hidden = mailPasswordStored;
@@ -928,12 +944,14 @@
     target.textContent = '';
     libraryStop();
     librarySelection.clear();
-    updateExportButton();
+    librarySelectableIds.clear();
+    libraryRenderedItemCount = items.length;
     if (!items.length) {
       const empty = document.createElement('p');
       empty.className = 'empty-state';
       empty.textContent = 'Keine Aufnahmen gefunden.';
       target.append(empty);
+      updateExportButton();
       return;
     }
     items.forEach((item) => {
@@ -942,9 +960,14 @@
       const select = document.createElement('input');
       select.type = 'checkbox';
       select.className = 'library-select';
+      select.dataset.itemId = item.item_id;
       const exportable = (item.formats_present || []).length > 0;
+      if (exportable) librarySelectableIds.add(item.item_id);
       select.disabled = !exportable;
       select.title = exportable ? 'Für Export auswählen' : 'Kein Transkript vorhanden';
+      select.setAttribute('aria-label', exportable
+        ? `${item.name} für Export auswählen`
+        : `${item.name}: kein Transkript für den Export vorhanden`);
       select.addEventListener('change', () => {
         if (select.checked) librarySelection.add(item.item_id);
         else librarySelection.delete(item.item_id);
@@ -1092,6 +1115,7 @@
       target.append(card);
       requestAnimationFrame(() => renderMiniWave(canvas, item.peaks34 || []));
     });
+    updateExportButton();
   };
   const setBatchOutcome = (audioName, text, error = false) => {
     document.querySelectorAll('.batch-outcome').forEach((node) => {
@@ -1513,6 +1537,12 @@
   $('pick-library').addEventListener('click', async () => {
     const result = await api.pick_library_dir();
     if (result && result.ok) $('library-path').value = result.path || '';
+  });
+  $('library-select-all').addEventListener('click', () => {
+    setAllLibraryItemsSelected(true);
+  });
+  $('library-select-none').addEventListener('click', () => {
+    setAllLibraryItemsSelected(false);
   });
   $('library-stop').addEventListener('click', async () => {
     // Stoppt ALLES: Bibliotheks-Player, Sprecher-Audio und Backend-Player.

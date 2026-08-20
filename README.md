@@ -123,7 +123,8 @@ Die Hauptreiter sind:
 
 - **Transkribieren**: Audio- und optionale Markerdatei für einen Einzellauf.
 - **Batch**: mehrere neue Dateien aus einem Sync-Ordner verarbeiten.
-- **Bibliothek**: Aufnahmen, Transkripte, Wiedergabe und Export verwalten.
+- **Bibliothek**: Aufnahmen, Transkripte, Wiedergabe und Export verwalten;
+  exportierbare Aufnahmen lassen sich gesammelt auswählen oder abwählen.
 - **Sprecher**: fertige Reviews abhören und Namen bearbeiten.
 - **Optionen**: zentrale Werte für Einzel- und Batchverarbeitung.
 

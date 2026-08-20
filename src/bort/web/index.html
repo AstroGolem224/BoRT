@@ -117,6 +117,13 @@
           <div class="picker"><input id="library-path" readonly><button id="pick-library" type="button">Wählen</button><button id="scan-library" type="button">Scannen</button><button id="library-stop" type="button" title="Alle Wiedergaben stoppen">■ Stop</button></div>
           <p id="library-summary" class="muted"></p>
         </div>
+        <div id="library-selection-toolbar" class="library-selection-toolbar" hidden>
+          <span id="library-selection-summary">0 von 0 ausgewählt</span>
+          <div class="library-selection-actions">
+            <button id="library-select-all" type="button">Alle auswählen</button>
+            <button id="library-select-none" type="button" disabled>Auswahl aufheben</button>
+          </div>
+        </div>
         <div id="library-items" class="library-items"><p class="empty-state">Noch nicht gescannt.</p></div>
         <audio id="library-audio" preload="none"></audio>
         <div class="card">
