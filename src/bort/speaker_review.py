@@ -1,14 +1,16 @@
 """Laden und Validieren von Speaker-Review-Sidecar-Dateien (`*.review.json`)."""
 
 import json
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .markers import Bookmark, SpeakerMarker
 from .speakers import SpeakerSegment
+from .voice_profiles import VoiceCatalogError, normalize_embedding
 from .writers import FORMATS
 
-SUPPORTED_SCHEMA_VERSIONS = {1, 2}
+SUPPORTED_SCHEMA_VERSIONS = {1, 2, 3}
 REQUIRED_FIELDS = (
     "schema_version",
     "audio_path",
@@ -39,6 +41,10 @@ class ReviewData:
     # bei doppelten Anzeigenamen).
     segment_ids: list[str | None] = field(default_factory=list)
     marker_ids: list[str | None] = field(default_factory=list)
+    speaker_embeddings: dict[str, list[float]] = field(default_factory=dict)
+    embedding_model: str | None = None
+    runtime_metrics: dict[str, float] = field(default_factory=dict)
+    run_metadata: dict[str, object] = field(default_factory=dict)
 
 
 def load_review(path: Path) -> ReviewData:
@@ -119,7 +125,36 @@ def load_review(path: Path) -> ReviewData:
         has_ids = any("speaker_id" in entry for entry in data["segments"])
         segment_ids = read_ids(data["segments"]) if has_ids else []
         marker_ids = read_ids(data["markers"]) if has_ids else []
-    except (KeyError, TypeError, ValueError, AttributeError) as exc:
+        raw_embeddings = data.get("speaker_embeddings", {})
+        embedding_model = data.get("embedding_model")
+        if not isinstance(raw_embeddings, dict):
+            raise TypeError("speaker_embeddings ist keine Map")
+        if raw_embeddings and (
+            not isinstance(embedding_model, str) or not embedding_model.strip()
+        ):
+            raise ValueError("embedding_model fehlt")
+        speaker_embeddings = {
+            str(speaker_id): normalize_embedding(vector)
+            for speaker_id, vector in raw_embeddings.items()
+            if str(speaker_id) in speaker_map
+        }
+        if len(speaker_embeddings) != len(raw_embeddings):
+            raise ValueError("speaker_embeddings enthält unbekannte Sprecher-IDs")
+        raw_metrics = data.get("runtime_metrics", {})
+        if not isinstance(raw_metrics, dict):
+            raise TypeError("runtime_metrics ist keine Map")
+        runtime_metrics = {str(key): float(value) for key, value in raw_metrics.items()}
+        if any(not math.isfinite(value) or value < 0 for value in runtime_metrics.values()):
+            raise ValueError("runtime_metrics enthält ungültige Werte")
+        raw_metadata = data.get("run_metadata", {})
+        if not isinstance(raw_metadata, dict) or not all(
+            isinstance(key, str)
+            and isinstance(value, (str, int, float, bool, type(None)))
+            for key, value in raw_metadata.items()
+        ):
+            raise TypeError("run_metadata enthält ungültige Werte")
+        run_metadata = dict(raw_metadata)
+    except (KeyError, TypeError, ValueError, AttributeError, VoiceCatalogError) as exc:
         raise ReviewError(
             f"Review-Datei enthält ungültige segments/markers/bookmarks/speaker_map-Einträge: {exc}"
         ) from exc
@@ -133,4 +168,8 @@ def load_review(path: Path) -> ReviewData:
         list(formats),
         segment_ids,
         marker_ids,
+        speaker_embeddings,
+        embedding_model.strip() if isinstance(embedding_model, str) else None,
+        runtime_metrics,
+        run_metadata,
     )

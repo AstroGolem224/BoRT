@@ -14,6 +14,13 @@
   let waveCache = null;
   let activeBatchId = null;
   let pendingBatchItems = [];
+  let voiceCatalogNames = [];
+  let reviewSpeakers = [];
+  let speakerDraftNames = new Map();
+  let activeSpeakerId = null;
+  let inlineSpeakerEditor = null;
+  let inlineEditorSpeakerId = null;
+  let speakerApplyFeedbackTimer = null;
 
   // Theme (hell/dunkel) – rein clientseitig via localStorage, Default dunkel.
   const applyTheme = (theme) => {
@@ -75,11 +82,17 @@
     const el = $(`${kind}-path`);
     if (el) el.value = path || '';
   };
+  const toggleVoiceProfiles = () => {
+    const disabled = $('no-diarize').checked || $('backend').value !== 'whisperx';
+    $('voice-profiles').disabled = disabled;
+    if (disabled) $('voice-profiles').checked = false;
+  };
   const toggleBackend = () => {
     const whisperx = $('backend').value === 'whisperx';
     $('whispercpp-options').hidden = whisperx;
     $('whisperx-options').hidden = !whisperx;
     $('diarize-options').hidden = !whisperx;
+    toggleVoiceProfiles();
   };
   const selectedFormats = () => [...document.querySelectorAll('input[name="format"]:checked')].map((item) => item.value);
   const formSettings = () => ({
@@ -88,21 +101,40 @@
     max_speakers: $('max-speakers').value, formats: selectedFormats(),
     keep_wav: $('keep-wav').checked, verbose: $('verbose').checked,
     no_diarize: $('no-diarize').checked, auto_markers: $('auto-markers').checked,
-    colocate: $('colocate').checked,
+    colocate: $('colocate').checked, voice_profiles: $('voice-profiles').checked,
+    performance_profile: $('performance-profile').value,
   });
+  const renderGlobalSettingsSummary = () => {
+    const whisperx = $('backend').value === 'whisperx';
+    const backend = whisperx ? 'whisperX / GPU' : 'whisper.cpp / CPU';
+    const language = $('language').selectedOptions[0]?.textContent || 'Automatisch';
+    const modelPath = $('model-path').value.split(/[\\/]/).pop();
+    const model = whisperx ? $('whisperx-model').value : modelPath || 'kein Modell';
+    const formats = selectedFormats().map((item) => item.toUpperCase()).join(', ') || 'kein Format';
+    const storage = $('colocate').checked ? 'neben Audio' : 'Ausgabeordner';
+    const summary = `${backend} · ${language} · ${model} · ${formats} · ${storage}`;
+    document.querySelectorAll('.global-settings-summary').forEach((node) => {
+      node.textContent = summary;
+      node.title = summary;
+    });
+  };
   const toggleColocate = () => {
     const active = $('colocate').checked;
     $('output-path').disabled = active;
     $('pick-output').disabled = active;
+    $('open-output').disabled = active;
+    $('output-mode-hint').textContent = active
+      ? 'Globale Option aktiv: Die Ausgabe wird neben der Audio-Datei gespeichert.'
+      : 'Globale Option aktiv: Einzeltranskription und Batch verwenden den zentralen Ausgabeordner.';
   };
   const applyInitialState = (state) => {
     Object.entries(state.paths || {}).forEach(([key, value]) => setPath(key, value));
     const settings = state.settings || {};
-    [['backend', 'backend'], ['language', 'language'], ['task', 'task'], ['whisperx_model', 'whisperx-model']]
+    [['backend', 'backend'], ['language', 'language'], ['task', 'task'], ['whisperx_model', 'whisperx-model'], ['performance_profile', 'performance-profile']]
       .forEach(([key, id]) => { if (settings[key]) $(id).value = settings[key]; });
     [['min_speakers', 'min-speakers'], ['max_speakers', 'max-speakers']]
       .forEach(([key, id]) => { if (settings[key]) $(id).value = settings[key]; });
-    [['keep_wav', 'keep-wav'], ['verbose', 'verbose'], ['no_diarize', 'no-diarize'], ['auto_markers', 'auto-markers'], ['colocate', 'colocate']]
+    [['keep_wav', 'keep-wav'], ['verbose', 'verbose'], ['no_diarize', 'no-diarize'], ['auto_markers', 'auto-markers'], ['colocate', 'colocate'], ['voice_profiles', 'voice-profiles']]
       .forEach(([key, id]) => { if (typeof settings[key] === 'boolean') $(id).checked = settings[key]; });
     if (Array.isArray(settings.formats)) {
       document.querySelectorAll('input[name="format"]').forEach((item) => {
@@ -111,6 +143,66 @@
     }
     toggleBackend();
     toggleColocate();
+    renderGlobalSettingsSummary();
+    applyVoiceCatalog(state.voice_catalog || {});
+  };
+  const applyVoiceCatalog = (catalog) => {
+    voiceCatalogNames = Array.isArray(catalog.names) ? catalog.names : [];
+    const profiles = Array.isArray(catalog.profiles) ? catalog.profiles : [];
+    const target = $('voice-profile-names');
+    target.textContent = '';
+    voiceCatalogNames.forEach((name) => {
+      const option = document.createElement('option');
+      option.value = name;
+      target.append(option);
+    });
+    refreshSavedNameSelects();
+    const status = $('voice-catalog-status');
+    const profileList = $('voice-catalog-list');
+    profileList.textContent = '';
+    $('voice-catalog-count').textContent = `${profiles.length} ${profiles.length === 1 ? 'Eintrag' : 'Einträge'}`;
+    if (catalog.available === false) {
+      status.textContent = catalog.error || 'Lokaler Namenskatalog ist nicht verfügbar.';
+      status.classList.add('error');
+      $('voice-catalog-panel').open = true;
+      $('remember-speakers').disabled = true;
+      return;
+    }
+    status.classList.remove('error');
+    $('remember-speakers').disabled = false;
+    status.textContent = voiceCatalogNames.length
+      ? `${voiceCatalogNames.length} lokale Namen als Vorschläge verfügbar.`
+      : 'Noch keine Namen gespeichert. Stimmabdrücke werden nur nach ausdrücklicher Aktivierung ergänzt.';
+    profiles.forEach((profile) => {
+      const chip = document.createElement('span');
+      chip.className = 'voice-profile-chip';
+      const label = document.createElement('button');
+      label.type = 'button';
+      label.className = 'voice-profile-use';
+      label.textContent = profile.has_voiceprint
+        ? `${profile.name} · Stimme ×${profile.sample_count}`
+        : `${profile.name} · nur Name`;
+      label.title = `${profile.name} für den ausgewählten Sprecher verwenden`;
+      label.addEventListener('click', () => assignActiveSpeakerName(profile.name));
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'voice-profile-delete';
+      remove.textContent = '×';
+      remove.title = `${profile.name} aus dem lokalen Katalog löschen`;
+      remove.setAttribute('aria-label', remove.title);
+      remove.addEventListener('click', async () => {
+        if (!window.confirm(`Lokales Profil „${profile.name}“ wirklich löschen?`)) return;
+        const result = await api.delete_voice_profile(profile.id);
+        if (!result.ok) {
+          setViewStatus('speaker-status', result.error || 'Profil konnte nicht gelöscht werden.', true);
+          return;
+        }
+        applyVoiceCatalog(result.voice_catalog || {});
+        setViewStatus('speaker-status', `Lokales Profil „${profile.name}“ gelöscht.`);
+      });
+      chip.append(label, remove);
+      profileList.append(chip);
+    });
   };
   const renderPreview = (segments, outputLocation) => {
     const preview = $('preview');
@@ -143,47 +235,241 @@
     renderBatch();
   };
   const renderSpeakers = (speakers) => {
+    reviewSpeakers = speakers;
+    speakerDraftNames = new Map(speakers.map((speaker) => [speaker.id, speaker.name || '']));
     const target = $('speaker-rows');
     target.textContent = '';
     const colors = speakerColorMap();
     speakers.forEach((speaker) => {
-      const row = document.createElement('div');
-      row.className = 'speaker-edit-row';
-      const identity = document.createElement('span');
-      identity.className = 'speaker-id';
-      identity.textContent = speaker.id;
-      // Gleiche Farbe wie das Sprecher-Segment in der Waveform.
+      const choice = document.createElement('button');
+      choice.type = 'button';
+      choice.className = 'speaker-choice';
+      choice.dataset.speakerId = speaker.id;
+      choice.setAttribute('role', 'option');
+      choice.setAttribute('aria-selected', 'false');
+      const dot = document.createElement('span');
+      dot.className = 'speaker-color-dot';
       const color = colors.get(speaker.id);
-      if (color) identity.style.color = color;
-      const input = document.createElement('input');
-      input.type = 'text';
-      input.value = speaker.name || '';
-      input.dataset.speakerId = speaker.id;
-      input.addEventListener('input', () => {
-        renderSpeakerTranscript();
-        renderWaveformLabels();
-      });
-      const play = document.createElement('button');
-      play.type = 'button';
-      play.textContent = '▶ Abspielen';
-      play.addEventListener('click', () => playFromSpeaker(speaker.id, speaker.name || speaker.id));
-      row.append(identity, input, play);
-      target.append(row);
+      if (color) {
+        dot.style.background = color;
+        dot.style.color = color;
+      }
+      const name = document.createElement('span');
+      name.className = 'speaker-choice-name';
+      name.textContent = speaker.name || 'Unbenannt';
+      const identity = document.createElement('span');
+      identity.className = 'speaker-choice-id';
+      identity.textContent = speaker.id;
+      choice.append(dot, name, identity);
+      choice.addEventListener('click', () => selectSpeaker(speaker.id, true));
+      target.append(choice);
     });
+    $('speaker-picker-count').textContent = `${speakers.length} Sprecher`;
+    activeSpeakerId = speakers.some((speaker) => speaker.id === activeSpeakerId)
+      ? activeSpeakerId
+      : speakers[0]?.id || null;
     $('speaker-editor').hidden = false;
+    $('apply-speakers-floating').hidden = speakers.length === 0;
+    $('speaker-detail').hidden = !activeSpeakerId;
+    if (activeSpeakerId) selectSpeaker(activeSpeakerId);
     renderSpeakerTranscript();
     renderWaveformLabels();
   };
   const currentSpeakerNames = () => {
-    const names = {};
-    document.querySelectorAll('#speaker-rows input[data-speaker-id]').forEach((input) => {
-      names[input.dataset.speakerId] = input.value.trim();
+    return Object.fromEntries(
+      [...speakerDraftNames.entries()].map(([speakerId, name]) => [speakerId, name.trim()]),
+    );
+  };
+  const updateSpeakerChoiceName = (speakerId) => {
+    const choice = document.querySelector(
+      `#speaker-rows .speaker-choice[data-speaker-id="${CSS.escape(speakerId)}"]`,
+    );
+    const name = choice?.querySelector('.speaker-choice-name');
+    if (name) name.textContent = speakerDraftNames.get(speakerId)?.trim() || 'Unbenannt';
+  };
+  const populateSavedNameSelect = (select, currentName = '') => {
+    if (!select) return;
+    const trimmedName = currentName.trim();
+    select.textContent = '';
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = voiceCatalogNames.length
+      ? 'Gespeicherten Namen wählen …'
+      : 'Noch keine Namen gespeichert';
+    select.append(placeholder);
+    voiceCatalogNames.forEach((name) => {
+      const option = document.createElement('option');
+      option.value = name;
+      option.textContent = name;
+      select.append(option);
     });
-    return names;
+    select.value = voiceCatalogNames.includes(trimmedName) ? trimmedName : '';
+    select.disabled = voiceCatalogNames.length === 0;
+  };
+  const refreshSavedNameSelects = () => {
+    document.querySelectorAll('.saved-speaker-name-select').forEach((select) => {
+      const speakerId = select.dataset.speakerId || activeSpeakerId;
+      populateSavedNameSelect(select, speakerDraftNames.get(speakerId) || '');
+    });
+  };
+  const closeInlineSpeakerEditor = () => {
+    inlineSpeakerEditor?.remove();
+    inlineSpeakerEditor = null;
+    inlineEditorSpeakerId = null;
+  };
+  const updateSpeakerName = (speakerId, name, sourceInput = null) => {
+    if (!speakerId) return;
+    speakerDraftNames.set(speakerId, name);
+    updateSpeakerChoiceName(speakerId);
+    if (activeSpeakerId === speakerId) {
+      if ($('speaker-name-input') !== sourceInput) $('speaker-name-input').value = name;
+      $('speaker-saved-name').dataset.speakerId = speakerId;
+      populateSavedNameSelect($('speaker-saved-name'), name);
+    }
+    if (inlineSpeakerEditor && inlineEditorSpeakerId === speakerId) {
+      const inlineInput = inlineSpeakerEditor.querySelector('.inline-speaker-name');
+      if (inlineInput && inlineInput !== sourceInput) inlineInput.value = name;
+      populateSavedNameSelect(
+        inlineSpeakerEditor.querySelector('.saved-speaker-name-select'),
+        name,
+      );
+    }
+    updateSpeakerTranscriptNames();
+    renderWaveformLabels();
+  };
+  const assignActiveSpeakerName = (name) => {
+    if (!activeSpeakerId) return;
+    updateSpeakerName(activeSpeakerId, name);
+  };
+  const selectSpeaker = (speakerId, focusName = false) => {
+    const speaker = reviewSpeakers.find((item) => item.id === speakerId);
+    if (!speaker) return;
+    if (inlineEditorSpeakerId && inlineEditorSpeakerId !== speakerId) closeInlineSpeakerEditor();
+    activeSpeakerId = speakerId;
+    document.querySelectorAll('#speaker-rows .speaker-choice').forEach((choice) => {
+      const selected = choice.dataset.speakerId === speakerId;
+      choice.classList.toggle('active', selected);
+      choice.setAttribute('aria-selected', String(selected));
+    });
+    const color = speakerColorMap().get(speakerId);
+    const dot = $('speaker-detail-dot');
+    if (color) {
+      dot.style.background = color;
+      dot.style.color = color;
+    }
+    $('speaker-detail-id').textContent = speakerId;
+    $('speaker-name-input').value = speakerDraftNames.get(speakerId) || '';
+    $('speaker-saved-name').dataset.speakerId = speakerId;
+    populateSavedNameSelect($('speaker-saved-name'), speakerDraftNames.get(speakerId) || '');
+    const suggestion = (speaker.suggestions || [])[0];
+    const suggestionButton = $('speaker-suggestion');
+    suggestionButton.hidden = !suggestion;
+    suggestionButton.textContent = suggestion
+      ? `Vorschlag: ${suggestion.name} · ${Math.round(suggestion.score * 100)} %`
+      : '';
+    $('speaker-detail').hidden = false;
+    if (focusName) $('speaker-name-input').focus();
+  };
+  const openInlineSpeakerEditor = (speakerId, row) => {
+    if (!speakerId || !row) return;
+    if (inlineSpeakerEditor && inlineEditorSpeakerId === speakerId
+        && inlineSpeakerEditor.parentElement === row) {
+      inlineSpeakerEditor.querySelector('.inline-speaker-name')?.focus();
+      return;
+    }
+    closeInlineSpeakerEditor();
+    selectSpeaker(speakerId);
+    const speaker = reviewSpeakers.find((item) => item.id === speakerId);
+    const color = speakerColorMap().get(speakerId);
+    const editor = document.createElement('div');
+    editor.className = 'inline-speaker-editor';
+    editor.setAttribute('role', 'group');
+    editor.setAttribute('aria-label', `Sprecher ${speakerId} benennen`);
+    editor.addEventListener('click', (event) => event.stopPropagation());
+    editor.addEventListener('keydown', (event) => event.stopPropagation());
+
+    const heading = document.createElement('div');
+    heading.className = 'inline-speaker-heading';
+    const dot = document.createElement('span');
+    dot.className = 'speaker-color-dot';
+    if (color) {
+      dot.style.background = color;
+      dot.style.color = color;
+    }
+    const title = document.createElement('strong');
+    title.textContent = `${speakerId} überall benennen`;
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'inline-speaker-close';
+    close.textContent = '×';
+    close.title = 'Editor schließen';
+    close.setAttribute('aria-label', close.title);
+    close.addEventListener('click', closeInlineSpeakerEditor);
+    heading.append(dot, title, close);
+
+    const fields = document.createElement('div');
+    fields.className = 'inline-speaker-fields';
+    const inputLabel = document.createElement('label');
+    inputLabel.textContent = 'Anzeigename';
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'inline-speaker-name';
+    input.setAttribute('list', 'voice-profile-names');
+    input.autocomplete = 'off';
+    input.placeholder = 'Name eingeben';
+    input.value = speakerDraftNames.get(speakerId) || '';
+    input.addEventListener('input', (event) => {
+      updateSpeakerName(speakerId, event.target.value, event.target);
+    });
+    inputLabel.append(input);
+
+    const savedLabel = document.createElement('label');
+    savedLabel.textContent = 'Gespeicherter Name';
+    const saved = document.createElement('select');
+    saved.className = 'saved-speaker-name-select';
+    saved.dataset.speakerId = speakerId;
+    populateSavedNameSelect(saved, speakerDraftNames.get(speakerId) || '');
+    saved.addEventListener('change', (event) => {
+      if (event.target.value) updateSpeakerName(speakerId, event.target.value);
+    });
+    savedLabel.append(saved);
+    fields.append(inputLabel, savedLabel);
+
+    const actions = document.createElement('div');
+    actions.className = 'inline-speaker-actions';
+    const suggestion = (speaker?.suggestions || [])[0];
+    if (suggestion) {
+      const suggestionButton = document.createElement('button');
+      suggestionButton.type = 'button';
+      suggestionButton.className = 'inline-speaker-suggestion';
+      suggestionButton.textContent = `Vorschlag: ${suggestion.name} · ${Math.round(suggestion.score * 100)} %`;
+      suggestionButton.addEventListener('click', () => updateSpeakerName(speakerId, suggestion.name));
+      actions.append(suggestionButton);
+    }
+    const play = document.createElement('button');
+    play.type = 'button';
+    play.textContent = '▶ Hörprobe';
+    play.addEventListener('click', () => {
+      const label = speakerDraftNames.get(speakerId)?.trim() || speakerId;
+      playFromSpeaker(speakerId, label);
+    });
+    const done = document.createElement('button');
+    done.type = 'button';
+    done.className = 'primary';
+    done.textContent = 'Fertig';
+    done.addEventListener('click', closeInlineSpeakerEditor);
+    actions.append(play, done);
+    editor.append(heading, fields, actions);
+    inlineSpeakerEditor = editor;
+    inlineEditorSpeakerId = speakerId;
+    row.append(editor);
+    input.focus();
+    input.select();
   };
   const renderSpeakerTranscript = () => {
     const target = $('speaker-transcript');
     if (!target) return;
+    closeInlineSpeakerEditor();
     const names = currentSpeakerNames();
     const fragment = document.createDocumentFragment();
     reviewSegments.forEach((segment) => {
@@ -193,18 +479,55 @@
       const timestamp = document.createElement('span');
       timestamp.className = 'timestamp';
       timestamp.textContent = `${formatTime(segment.start)} – ${formatTime(segment.end)}`;
-      const speaker = document.createElement('span');
-      speaker.className = 'speaker';
       const mapped = segment.speaker_id != null ? names[segment.speaker_id] : '';
-      speaker.textContent = mapped || segment.speaker_id || 'Sprecher';
+      const displayName = mapped || segment.speaker_id || 'Sprecher';
+      const speaker = document.createElement(segment.speaker_id != null ? 'button' : 'span');
+      speaker.className = segment.speaker_id != null
+        ? 'speaker speaker-inline-button'
+        : 'speaker';
+      speaker.textContent = displayName;
+      if (segment.speaker_id != null) {
+        speaker.type = 'button';
+        speaker.title = `${displayName} überall ändern`;
+        speaker.setAttribute('aria-label', `${displayName} – Sprechernamen ändern`);
+        speaker.addEventListener('click', (event) => {
+          event.stopPropagation();
+          openInlineSpeakerEditor(segment.speaker_id, row);
+        });
+      }
       const text = document.createElement('span');
       text.textContent = segment.text || '';
       row.append(timestamp, speaker, text);
-      row.addEventListener('click', () => seekToSegment(segment));
+      row.addEventListener('click', () => {
+        if (segment.speaker_id != null) selectSpeaker(segment.speaker_id);
+        seekToSegment(segment);
+      });
       fragment.append(row);
     });
     target.textContent = '';
     target.append(fragment);
+    const count = $('speaker-transcript-count');
+    if (count) {
+      count.textContent = reviewSegments.length === 1
+        ? '1 Segment'
+        : `${reviewSegments.length} Segmente`;
+    }
+  };
+  const updateSpeakerTranscriptNames = () => {
+    const target = $('speaker-transcript');
+    if (!target) return;
+    const names = currentSpeakerNames();
+    target.querySelectorAll('.segment[data-speaker-id]').forEach((row) => {
+      const speaker = row.querySelector('.speaker');
+      if (!speaker) return;
+      const speakerId = row.dataset.speakerId;
+      const displayName = names[speakerId] || speakerId || 'Sprecher';
+      speaker.textContent = displayName;
+      if (speaker.matches('button')) {
+        speaker.title = `${displayName} überall ändern`;
+        speaker.setAttribute('aria-label', `${displayName} – Sprechernamen ändern`);
+      }
+    });
   };
 
   // --- Audio-Player (Sprecher-Ansicht) ---
@@ -488,7 +811,6 @@
       // Alte v1-Reviews mit doppelten Namen: Segmente dieser ID sind kollabiert.
       setViewStatus('speaker-status', `Keine Segmente für ${label} (${speakerId}) — Altdatei mit doppelten Namen?`);
     }
-    scrollTranscriptToSpeaker(speakerId);
   };
 
   const renderBatchItems = (items) => {
@@ -851,27 +1173,49 @@
       setStatus('Der Batch läuft im Hintergrund weiter. Status und Abbruch bleiben in der Batch-Ansicht verfügbar.');
     }
   }));
-  $('backend').addEventListener('change', toggleBackend);
-  // Ausgabeoptionen sofort persistieren, nicht erst beim Transkriptions-Start.
-  const persistOutputOptions = () => {
+  document.querySelectorAll('.open-settings').forEach((button) => {
+    button.addEventListener('click', () => activateView('settings'));
+  });
+  // Alle Transkriptionsoptionen sofort appweit persistieren.
+  const persistGlobalOptions = () => {
+    renderGlobalSettingsSummary();
     if (!api) return;
     const s = formSettings();
-    api.save_output_options({
-      formats: s.formats, keep_wav: s.keep_wav, verbose: s.verbose,
-      no_diarize: s.no_diarize, auto_markers: s.auto_markers, colocate: s.colocate,
-    }).catch(() => {});
+    api.save_output_options(s).then((result) => {
+      setViewStatus(
+        'settings-status',
+        result.ok
+          ? 'Gespeichert. Einzeltranskription und Batch verwenden diese Optionen beim nächsten Lauf.'
+          : result.error || 'Optionen konnten nicht gespeichert werden.',
+        !result.ok,
+      );
+    }).catch(() => {
+      setViewStatus('settings-status', 'Optionen konnten nicht gespeichert werden.', true);
+    });
   };
-  document.querySelectorAll('input[name="format"], #keep-wav, #verbose, #no-diarize, #auto-markers, #colocate')
-    .forEach((input) => input.addEventListener('change', persistOutputOptions));
-  $('colocate').addEventListener('change', toggleColocate);
+  document.querySelectorAll(
+    '#backend, #language, #task, #whisperx-model, #performance-profile, '
+    + '#min-speakers, #max-speakers, input[name="format"], #keep-wav, #verbose, '
+    + '#no-diarize, #auto-markers, #colocate, #voice-profiles',
+  ).forEach((input) => input.addEventListener('change', () => {
+    if (input.id === 'backend') toggleBackend();
+    if (input.id === 'colocate') toggleColocate();
+    if (input.id === 'no-diarize') toggleVoiceProfiles();
+    persistGlobalOptions();
+  }));
   [['audio', 'pick-audio'], ['marker', 'pick-marker'], ['output', 'pick-output'], ['model', 'pick-model']]
     .forEach(([kind, id]) => $(id).addEventListener('click', async () => {
       const result = await api[`pick_${kind}`]();
-      if (result && result.ok) setPath(kind, result.path);
+      if (result && result.ok) {
+        setPath(kind, result.path);
+        if (kind === 'model') renderGlobalSettingsSummary();
+      }
     }));
   $('open-output').addEventListener('click', async () => {
     const result = await api.open_output_dir($('colocate').checked);
-    if (result && !result.ok) setStatus(result.error || 'Ordner konnte nicht geöffnet werden.', true);
+    if (result && !result.ok) {
+      setViewStatus('settings-status', result.error || 'Ordner konnte nicht geöffnet werden.', true);
+    }
   });
   $('start').addEventListener('click', async () => {
     $('preview').hidden = true;
@@ -1034,18 +1378,92 @@
       observer.observe($('player-bar'));
     }
   })();
-  $('apply-speakers').addEventListener('click', async () => {
-    const renameMap = {};
-    document.querySelectorAll('#speaker-rows input[data-speaker-id]').forEach((input) => {
-      renameMap[input.dataset.speakerId] = input.value;
+  $('speaker-name-input').addEventListener('input', (event) => {
+    if (!activeSpeakerId) return;
+    updateSpeakerName(activeSpeakerId, event.target.value, event.target);
+  });
+  $('speaker-saved-name').addEventListener('change', (event) => {
+    if (!activeSpeakerId || !event.target.value) return;
+    updateSpeakerName(activeSpeakerId, event.target.value);
+  });
+  $('speaker-suggestion').addEventListener('click', () => {
+    const speaker = reviewSpeakers.find((item) => item.id === activeSpeakerId);
+    const suggestion = (speaker?.suggestions || [])[0];
+    if (!speaker || !suggestion) return;
+    assignActiveSpeakerName(suggestion.name);
+  });
+  $('play-selected-speaker').addEventListener('click', () => {
+    if (!activeSpeakerId) return;
+    const label = speakerDraftNames.get(activeSpeakerId)?.trim() || activeSpeakerId;
+    playFromSpeaker(activeSpeakerId, label);
+  });
+  $('show-selected-speaker').addEventListener('click', () => {
+    if (activeSpeakerId) scrollTranscriptToSpeaker(activeSpeakerId);
+  });
+  $('speaker-rows').addEventListener('keydown', (event) => {
+    if (!['ArrowDown', 'ArrowRight', 'ArrowUp', 'ArrowLeft'].includes(event.key)) return;
+    const choices = [...document.querySelectorAll('#speaker-rows .speaker-choice')];
+    const index = choices.indexOf(document.activeElement);
+    if (index < 0 || !choices.length) return;
+    event.preventDefault();
+    const direction = ['ArrowDown', 'ArrowRight'].includes(event.key) ? 1 : -1;
+    const next = choices[(index + direction + choices.length) % choices.length];
+    next.focus();
+    selectSpeaker(next.dataset.speakerId);
+  });
+  const speakerApplyButtons = () => [$('apply-speakers'), $('apply-speakers-floating')];
+  const resetSpeakerApplyLabels = () => {
+    $('apply-speakers').textContent = 'Anwenden';
+    $('apply-speakers-floating').textContent = '✓ Änderungen anwenden';
+    $('apply-speakers-floating').classList.remove('save-confirmed', 'save-error');
+  };
+  const showSpeakerApplyFeedback = (message, className) => {
+    clearTimeout(speakerApplyFeedbackTimer);
+    const floating = $('apply-speakers-floating');
+    floating.textContent = message;
+    floating.classList.remove('save-confirmed', 'save-error');
+    floating.classList.add(className);
+    speakerApplyFeedbackTimer = setTimeout(resetSpeakerApplyLabels, 2200);
+  };
+  const applySpeakerRenames = async () => {
+    if (!reviewId || speakerApplyButtons().some((button) => button.disabled)) return;
+    clearTimeout(speakerApplyFeedbackTimer);
+    speakerApplyButtons().forEach((button) => {
+      button.disabled = true;
+      button.textContent = 'Speichert …';
     });
-    const result = await api.apply_speaker_rename(reviewId, renameMap);
+    try {
+      const result = await api.apply_speaker_rename(reviewId, currentSpeakerNames());
+      if (!result.ok) {
+        const message = result.error || 'Änderungen konnten nicht gespeichert werden.';
+        setViewStatus('speaker-status', message, true);
+        showSpeakerApplyFeedback('Speichern fehlgeschlagen', 'save-error');
+        return;
+      }
+      renderSpeakers(result.speakers || []);
+      setViewStatus('speaker-status', `${result.files_rewritten} Dateien neu geschrieben.`);
+      showSpeakerApplyFeedback('✓ Gespeichert', 'save-confirmed');
+    } catch (error) {
+      setViewStatus('speaker-status', error?.message || 'Änderungen konnten nicht gespeichert werden.', true);
+      showSpeakerApplyFeedback('Speichern fehlgeschlagen', 'save-error');
+    } finally {
+      speakerApplyButtons().forEach((button) => { button.disabled = false; });
+      $('apply-speakers').textContent = 'Anwenden';
+    }
+  };
+  $('apply-speakers').addEventListener('click', applySpeakerRenames);
+  $('apply-speakers-floating').addEventListener('click', applySpeakerRenames);
+  $('remember-speakers').addEventListener('click', async () => {
+    const result = await api.save_voice_profile_names(currentSpeakerNames(), reviewId);
     if (!result.ok) {
-      setViewStatus('speaker-status', result.error || 'Änderungen konnten nicht gespeichert werden.', true);
+      setViewStatus('speaker-status', result.error || 'Namen konnten nicht gespeichert werden.', true);
       return;
     }
-    renderSpeakers(result.speakers || []);
-    setViewStatus('speaker-status', `${result.files_rewritten} Dateien neu geschrieben.`);
+    applyVoiceCatalog(result.voice_catalog || {});
+    const voiceprints = result.voiceprints_saved
+      ? `, ${result.voiceprints_saved} Stimmprofile aktualisiert`
+      : '';
+    setViewStatus('speaker-status', `${result.saved.length} Namen lokal gespeichert${voiceprints}.`);
   });
   $('pick-watch').addEventListener('click', async () => {
     const result = await api.pick_watch_dir();

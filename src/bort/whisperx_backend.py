@@ -19,7 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
@@ -35,6 +35,11 @@ WHISPER_TAGGER_RUN = WHISPER_TAGGER_DIR / "run.sh"
 
 # Default-Speaker-Prefix für das sprecherNNN-Labeling.
 DEFAULT_SPEAKER_PREFIX = "sprecher"
+PERFORMANCE_PROFILES = {
+    "fast": {"beam_size": 1, "batch_size": 32},
+    "balanced": {"beam_size": 3, "batch_size": 24},
+    "quality": {"beam_size": 5, "batch_size": 16},
+}
 
 
 class WhisperXError(Exception):
@@ -56,6 +61,9 @@ class WhisperXResult:
     markers: list[SpeakerMarker]
     speaker_map: dict[str, str]
     language: str | None
+    speaker_embeddings: dict[str, list[float]] = field(default_factory=dict)
+    embedding_model: str | None = None
+    runtime_metrics: dict[str, float] = field(default_factory=dict)
 
 
 def _ensure_backend_available() -> None:
@@ -74,7 +82,9 @@ def _run_whisperx(
     min_speakers: int | None,
     max_speakers: int | None,
     no_diarize: bool = False,
+    return_embeddings: bool = False,
     progress_cb: Callable[[float, str], None] | None = None,
+    performance_profile: str = "balanced",
 ) -> dict:
     """Führt das whisperX-Script aus und gibt das geparste JSON zurück.
 
@@ -102,6 +112,19 @@ def _run_whisperx(
         cmd.extend(["--max-speakers", str(max_speakers)])
     if no_diarize:
         cmd.append("--no-diarize")
+    if return_embeddings and not no_diarize:
+        cmd.append("--return-embeddings")
+    profile = PERFORMANCE_PROFILES.get(
+        performance_profile, PERFORMANCE_PROFILES["balanced"]
+    )
+    cmd.extend(
+        [
+            "--beam-size",
+            str(profile["beam_size"]),
+            "--batch-size",
+            str(profile["batch_size"]),
+        ]
+    )
 
     logger.debug("whisperX-Backend Aufruf: %s", " ".join(cmd))
 
@@ -216,11 +239,13 @@ def _to_domain(
 def transcribe(
     audio_path: Path,
     language: str | None = None,
-    model_name: str = "large-v3",
+    model_name: str = "large-v3-turbo",
     min_speakers: int | None = None,
     max_speakers: int | None = None,
     no_diarize: bool = False,
+    return_embeddings: bool = False,
     progress_cb: Callable[[float, str], None] | None = None,
+    performance_profile: str = "balanced",
 ) -> WhisperXResult:
     """Transkribiert Audio mit whisperX und erzeugt Marker + Speaker-Map.
 
@@ -231,7 +256,9 @@ def transcribe(
         min_speakers: Mindestanzahl Sprecher für Diarisierung.
         max_speakers: Maximalanzahl Sprecher für Diarisierung.
         no_diarize: Sprecher-Diarisierung überspringen (nur Transkription).
+        return_embeddings: Sprecher-Vektoren für explizite lokale Profile anfordern.
         progress_cb: Optionaler Callback (percent, phase) für Fortschritt.
+        performance_profile: ``fast``, ``balanced`` oder ``quality``.
 
     Returns:
         WhisperXResult mit Segmenten, Markern und Speaker-Map.
@@ -244,8 +271,15 @@ def transcribe(
         raise WhisperXError(f"Audiodatei nicht gefunden: {audio_path}")
 
     data = _run_whisperx(
-        audio_path, language, model_name, min_speakers, max_speakers,
-        no_diarize, progress_cb=progress_cb,
+        audio_path,
+        language,
+        model_name,
+        min_speakers,
+        max_speakers,
+        no_diarize,
+        return_embeddings,
+        progress_cb=progress_cb,
+        performance_profile=performance_profile,
     )
     segments, markers, speaker_map = _to_domain(data)
 
@@ -260,6 +294,9 @@ def transcribe(
         markers=markers,
         speaker_map=speaker_map,
         language=data.get("language"),
+        speaker_embeddings=dict(data.get("speaker_embeddings") or {}),
+        embedding_model=data.get("embedding_model"),
+        runtime_metrics=dict(data.get("runtime_metrics") or {}),
     )
 
 

@@ -118,3 +118,36 @@ def test_load_review_rejects_unknown_format(tmp_path: Path) -> None:
     )
     with pytest.raises(ReviewError, match="formats"):
         load_review(p)
+
+
+def test_load_review_v3_validates_voiceprints_and_metrics(tmp_path: Path) -> None:
+    audio_path = tmp_path / "session.m4a"
+    audio_path.write_bytes(b"")
+    path = tmp_path / "session.review.json"
+    data = dict(VALID_DATA, audio_path=str(audio_path), schema_version=3)
+    data.update(
+        speaker_embeddings={"SP1": [3.0, 4.0]},
+        embedding_model="pyannote/speaker-diarization-3.1",
+        runtime_metrics={"total_seconds": 4.2},
+        run_metadata={"backend": "whisperx", "model": "large-v3-turbo"},
+    )
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    review = load_review(path)
+
+    assert review.speaker_embeddings["SP1"] == pytest.approx([0.6, 0.8])
+    assert review.embedding_model == "pyannote/speaker-diarization-3.1"
+    assert review.runtime_metrics == {"total_seconds": 4.2}
+    assert review.run_metadata["model"] == "large-v3-turbo"
+
+
+def test_load_review_v3_rejects_unknown_embedding_speaker(tmp_path: Path) -> None:
+    audio_path = tmp_path / "session.m4a"
+    audio_path.write_bytes(b"")
+    path = tmp_path / "session.review.json"
+    data = dict(VALID_DATA, audio_path=str(audio_path), schema_version=3)
+    data.update(speaker_embeddings={"UNKNOWN": [1.0, 0.0]}, embedding_model="embed-v1")
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+    with pytest.raises(ReviewError, match="unbekannte Sprecher"):
+        load_review(path)

@@ -29,6 +29,10 @@ class RegisteredReview:
     segment_ids: list[str | None] = field(default_factory=list)
     marker_ids: list[str | None] = field(default_factory=list)
     review_path: Path | None = None
+    speaker_embeddings: dict[str, list[float]] = field(default_factory=dict)
+    embedding_model: str | None = None
+    runtime_metrics: dict[str, float] = field(default_factory=dict)
+    run_metadata: dict[str, object] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -226,7 +230,9 @@ class SpeakerEditController:
         review_data = {
             # v2: speaker_id pro Segment/Marker, damit doppelte Anzeigenamen beim
             # Neuladen nicht auf eine ID kollabieren (sonst tote Abspielen-Buttons).
-            "schema_version": 2,
+            "schema_version": 3
+            if review.speaker_embeddings or review.runtime_metrics or review.run_metadata
+            else 2,
             "audio_path": str(review.audio_path),
             "segments": [
                 {
@@ -260,6 +266,13 @@ class SpeakerEditController:
             "base_name": review.base_name,
             "formats": review.formats,
         }
+        if review.speaker_embeddings:
+            review_data["speaker_embeddings"] = review.speaker_embeddings
+            review_data["embedding_model"] = review.embedding_model
+        if review.runtime_metrics:
+            review_data["runtime_metrics"] = review.runtime_metrics
+        if review.run_metadata:
+            review_data["run_metadata"] = review.run_metadata
         output_paths = write_outputs(
             segments,
             review.output_dir,

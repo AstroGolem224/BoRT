@@ -25,6 +25,15 @@ _ALLOWED_FINAL_SUFFIXES = (".txt", ".md", ".csv", ".tsv", ".review.json", ".mark
 _STALE_SECONDS = 3600
 
 
+def _write_json(path: Path, data: dict[str, Any], *, private: bool = False) -> None:
+    path.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    if private:
+        os.chmod(path, 0o600)
+
+
 def _format_time(seconds: float) -> str:
     """Formatiert Sekunden als HH:MM:SS."""
     hours, remainder = divmod(int(seconds), 3600)
@@ -461,8 +470,8 @@ def write_outputs(
             normalized = {**review_data, "base_name": unique_base}
             producers.append((
                 date_dir / f"{unique_base}.review.json",
-                lambda path, data=normalized: path.write_text(
-                    json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8"
+                lambda path, data=normalized: _write_json(
+                    path, data, private=bool(data.get("speaker_embeddings"))
                 ),
             ))
         if marker_data is not None:
@@ -484,8 +493,11 @@ def write_outputs(
         if review_data is not None:
             normalized_review_data = {**review_data, "base_name": unique_base}
             review_path = date_dir / f"{unique_base}.review.json"
-            with review_path.open("w", encoding="utf-8") as f:
-                json.dump(normalized_review_data, f, indent=2, ensure_ascii=False)
+            _write_json(
+                review_path,
+                normalized_review_data,
+                private=bool(normalized_review_data.get("speaker_embeddings")),
+            )
             written.append(review_path)
 
         if marker_data is not None:
