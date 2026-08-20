@@ -95,7 +95,7 @@
                 <button id="play-selected-speaker" type="button">▶ Hörprobe</button>
               </div>
             </div>
-            <div class="actions"><button id="remember-speakers" type="button">Namen lokal merken</button><button id="apply-speakers" class="primary" type="button">Anwenden</button></div>
+            <div class="actions"><button id="remember-speakers" type="button">Namen lokal merken</button><button id="apply-speakers" class="primary" type="button" title="Anwenden (Strg+S)">Anwenden</button></div>
           </div>
           <div class="card speaker-transcript-card">
             <div class="card-heading">
@@ -106,7 +106,8 @@
             <div id="speaker-transcript" class="speaker-transcript"></div>
           </div>
         </div>
-        <button id="apply-speakers-floating" class="primary speaker-floating-apply" type="button" aria-live="polite" hidden>✓ Änderungen anwenden</button>
+        <div id="speaker-save-toast" class="speaker-save-toast" role="status" aria-live="polite" aria-atomic="true" hidden></div>
+        <button id="apply-speakers-floating" class="primary speaker-floating-apply" type="button" title="Änderungen anwenden (Strg+S)" aria-live="polite" hidden>✓ Änderungen anwenden</button>
       </section>
       <section id="library" class="view" aria-labelledby="library-title">
         <header><h1 id="library-title">Bibliothek</h1><p>Aufnahmen, Transkripte und Reviews an einem Ort.</p></header>

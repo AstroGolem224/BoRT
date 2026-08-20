@@ -619,6 +619,32 @@ button.speaker-choice.active {
   background: linear-gradient(140deg, #fb7185, #e11d48) !important;
   color: #fff;
 }
+.speaker-save-toast {
+  position: fixed;
+  right: 28px;
+  bottom: 88px;
+  z-index: 31;
+  max-width: min(420px, calc(100vw - 56px));
+  padding: 10px 15px;
+  overflow: hidden;
+  border: 1px solid rgba(45, 212, 191, 0.34);
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(45, 212, 191, 0.16), rgba(34, 211, 238, 0.11)), var(--glass-deep);
+  box-shadow: var(--raised-sm), 0 0 24px rgba(45, 212, 191, 0.16);
+  backdrop-filter: blur(18px) saturate(135%);
+  -webkit-backdrop-filter: blur(18px) saturate(135%);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 650;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(8px) scale(0.98);
+  transition: opacity 0.18s ease, transform 0.18s var(--ease);
+}
+.speaker-save-toast[hidden] { display: none !important; }
+.speaker-save-toast.visible { opacity: 1; transform: translateY(0) scale(1); }
 .segment { transition: background 0.4s ease; border-radius: 8px; }
 .segment-highlight { background: var(--accent-glow); }
 

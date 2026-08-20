@@ -114,8 +114,10 @@ der aktiven Werte und verlinken direkt zu den Optionen.
    Stimmprofilvorschlag bestätigen.
 4. Mit **Hörprobe** kontrollieren. Die Wiedergabe verändert die Scrollposition
    nicht. **Im Transkript zeigen** ist die getrennte Navigationsaktion.
-5. Mit **Änderungen anwenden** die Review und alle konfigurierten Ausgabeformate
-   atomar neu schreiben. Der schwebende Knopf bleibt beim Scrollen erreichbar.
+5. Mit **Änderungen anwenden** oder `Strg+S` die Review und alle konfigurierten
+   Ausgabeformate atomar neu schreiben. Der schwebende Knopf bleibt beim Scrollen
+   erreichbar; ein kurzer `<dateiname>.review.json saved`-Toast bestätigt den
+   erfolgreichen Abschluss.
 6. Optional mit **Namen lokal merken** bestätigte Namen und – nur bei zuvor
    aktiviertem Opt-in – Stimmprofile in den Katalog übernehmen.
 

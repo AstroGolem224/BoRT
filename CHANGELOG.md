@@ -41,6 +41,8 @@ Alle wesentlichen Änderungen an BoRT werden in dieser Datei dokumentiert.
   nicht; „Im Transkript zeigen“ navigiert ausdrücklich zum ersten Segment.
 - Ein schwebender „Änderungen anwenden“-Knopf bleibt auch am Ende langer
   Transkripte erreichbar und zeigt Speichererfolg oder Fehler direkt an.
+- `Strg+S` löst in der aktiven Sprecheransicht dieselbe Speicheraktion aus; ein
+  kurzer Toast bestätigt die gespeicherte Review-Datei.
 
 ### Globale Optionen und Design
 

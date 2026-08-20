@@ -31,6 +31,7 @@ Transkript anklicken, eintippen oder aus dem gespeicherten Katalog wählen. Alle
 Vorkommen, der Sprecher-Picker und die Waveform werden gemeinsam aktualisiert.
 Erst **Änderungen anwenden** schreibt die Review und Ausgabeformate neu; ein
 schwebender Anwenden-Knopf bleibt auch am Ende langer Transkripte sichtbar.
+Alternativ speichert `Strg+S`; ein kurzer Toast bestätigt den Dateinamen.
 
 Die Option **Stimmprofile lokal erfassen** ist standardmäßig ausgeschaltet. Wenn
 sie vor einer whisperX-Transkription eingeschaltet wird, speichert die private

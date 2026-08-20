@@ -21,6 +21,7 @@
   let inlineSpeakerEditor = null;
   let inlineEditorSpeakerId = null;
   let speakerApplyFeedbackTimer = null;
+  let speakerSaveToastTimer = null;
 
   // Theme (hell/dunkel) – rein clientseitig via localStorage, Default dunkel.
   const applyTheme = (theme) => {
@@ -1425,6 +1426,23 @@
     floating.classList.add(className);
     speakerApplyFeedbackTimer = setTimeout(resetSpeakerApplyLabels, 2200);
   };
+  const showSpeakerSaveToast = () => {
+    clearTimeout(speakerSaveToastTimer);
+    const toast = $('speaker-save-toast');
+    const filename = reviewBaseName
+      ? `${reviewBaseName}.review.json`
+      : 'Review';
+    toast.classList.remove('visible');
+    toast.hidden = false;
+    toast.textContent = '';
+    requestAnimationFrame(() => {
+      toast.textContent = `${filename} saved`;
+      toast.classList.add('visible');
+    });
+    speakerSaveToastTimer = setTimeout(() => {
+      toast.classList.remove('visible');
+    }, 2200);
+  };
   const applySpeakerRenames = async () => {
     if (!reviewId || speakerApplyButtons().some((button) => button.disabled)) return;
     clearTimeout(speakerApplyFeedbackTimer);
@@ -1443,6 +1461,7 @@
       renderSpeakers(result.speakers || []);
       setViewStatus('speaker-status', `${result.files_rewritten} Dateien neu geschrieben.`);
       showSpeakerApplyFeedback('✓ Gespeichert', 'save-confirmed');
+      showSpeakerSaveToast();
     } catch (error) {
       setViewStatus('speaker-status', error?.message || 'Änderungen konnten nicht gespeichert werden.', true);
       showSpeakerApplyFeedback('Speichern fehlgeschlagen', 'save-error');
@@ -1453,6 +1472,16 @@
   };
   $('apply-speakers').addEventListener('click', applySpeakerRenames);
   $('apply-speakers-floating').addEventListener('click', applySpeakerRenames);
+  document.addEventListener('keydown', (event) => {
+    const isSpeakerSave = event.ctrlKey
+      && !event.altKey
+      && !event.shiftKey
+      && event.key.toLowerCase() === 's';
+    const speakerViewActive = $('speakers').classList.contains('active');
+    if (!isSpeakerSave || !speakerViewActive || $('speaker-editor').hidden || !reviewId) return;
+    event.preventDefault();
+    if (!event.repeat) applySpeakerRenames();
+  });
   $('remember-speakers').addEventListener('click', async () => {
     const result = await api.save_voice_profile_names(currentSpeakerNames(), reviewId);
     if (!result.ok) {

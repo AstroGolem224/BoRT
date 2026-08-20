@@ -37,9 +37,12 @@ Die Wayland-/NVIDIA-sicheren WebKit-Einstellungen sind in dieser Datei enthalten
 9. Am Ende des Transkripts den schwebenden **Änderungen anwenden**-Knopf drücken.
    Er muss `Speichert …` und danach `Gespeichert` oder einen sichtbaren Fehler
    anzeigen. Review und Ausgabeformate müssen aktualisiert sein.
-10. Mit `Namen lokal merken` die bestätigten Namen und optionalen Stimmprofile in
+10. Einen weiteren Namen ändern und `Strg+S` drücken. Der Browser-Speicherdialog
+    darf nicht erscheinen; stattdessen muss derselbe Speichervorgang laufen und
+    kurz `<dateiname>.review.json saved` eingeblendet werden.
+11. Mit `Namen lokal merken` die bestätigten Namen und optionalen Stimmprofile in
     den lokalen Katalog übernehmen.
-11. Dieselben Personen in einer zweiten Aufnahme testen. Vorschläge müssen
+12. Dieselben Personen in einer zweiten Aufnahme testen. Vorschläge müssen
     anklickbar sein, dürfen aber nie automatisch angewendet werden.
 
 ## Automatische Prüfungen
