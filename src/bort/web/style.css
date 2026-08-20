@@ -595,6 +595,30 @@ button.speaker-choice.active {
 .inline-speaker-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .inline-speaker-actions button { padding: 8px 11px; font-size: 12px; }
 .inline-speaker-suggestion { margin-right: auto; color: var(--accent); }
+.speaker-floating-apply {
+  position: fixed;
+  right: 28px;
+  bottom: 24px;
+  z-index: 30;
+  min-width: 190px;
+  padding: 13px 20px !important;
+  border-radius: 999px;
+  box-shadow:
+    0 16px 38px rgba(0, 0, 0, 0.48),
+    0 0 30px rgba(34, 211, 238, 0.22),
+    inset 0 1px 0 rgba(255, 255, 255, 0.46) !important;
+  backdrop-filter: blur(18px) saturate(135%);
+  -webkit-backdrop-filter: blur(18px) saturate(135%);
+}
+.speaker-floating-apply[hidden] { display: none !important; }
+.speaker-floating-apply.save-confirmed {
+  background: linear-gradient(140deg, #2dd4bf, var(--accent)) !important;
+}
+.speaker-floating-apply.save-error {
+  border-color: rgba(251, 113, 133, 0.72) !important;
+  background: linear-gradient(140deg, #fb7185, #e11d48) !important;
+  color: #fff;
+}
 .segment { transition: background 0.4s ease; border-radius: 8px; }
 .segment-highlight { background: var(--accent-glow); }
 

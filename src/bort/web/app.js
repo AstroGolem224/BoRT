@@ -20,6 +20,7 @@
   let activeSpeakerId = null;
   let inlineSpeakerEditor = null;
   let inlineEditorSpeakerId = null;
+  let speakerApplyFeedbackTimer = null;
 
   // Theme (hell/dunkel) – rein clientseitig via localStorage, Default dunkel.
   const applyTheme = (theme) => {
@@ -268,6 +269,7 @@
       ? activeSpeakerId
       : speakers[0]?.id || null;
     $('speaker-editor').hidden = false;
+    $('apply-speakers-floating').hidden = speakers.length === 0;
     $('speaker-detail').hidden = !activeSpeakerId;
     if (activeSpeakerId) selectSpeaker(activeSpeakerId);
     renderSpeakerTranscript();
@@ -1409,16 +1411,48 @@
     next.focus();
     selectSpeaker(next.dataset.speakerId);
   });
-  $('apply-speakers').addEventListener('click', async () => {
-    const renameMap = currentSpeakerNames();
-    const result = await api.apply_speaker_rename(reviewId, renameMap);
-    if (!result.ok) {
-      setViewStatus('speaker-status', result.error || 'Änderungen konnten nicht gespeichert werden.', true);
-      return;
+  const speakerApplyButtons = () => [$('apply-speakers'), $('apply-speakers-floating')];
+  const resetSpeakerApplyLabels = () => {
+    $('apply-speakers').textContent = 'Anwenden';
+    $('apply-speakers-floating').textContent = '✓ Änderungen anwenden';
+    $('apply-speakers-floating').classList.remove('save-confirmed', 'save-error');
+  };
+  const showSpeakerApplyFeedback = (message, className) => {
+    clearTimeout(speakerApplyFeedbackTimer);
+    const floating = $('apply-speakers-floating');
+    floating.textContent = message;
+    floating.classList.remove('save-confirmed', 'save-error');
+    floating.classList.add(className);
+    speakerApplyFeedbackTimer = setTimeout(resetSpeakerApplyLabels, 2200);
+  };
+  const applySpeakerRenames = async () => {
+    if (!reviewId || speakerApplyButtons().some((button) => button.disabled)) return;
+    clearTimeout(speakerApplyFeedbackTimer);
+    speakerApplyButtons().forEach((button) => {
+      button.disabled = true;
+      button.textContent = 'Speichert …';
+    });
+    try {
+      const result = await api.apply_speaker_rename(reviewId, currentSpeakerNames());
+      if (!result.ok) {
+        const message = result.error || 'Änderungen konnten nicht gespeichert werden.';
+        setViewStatus('speaker-status', message, true);
+        showSpeakerApplyFeedback('Speichern fehlgeschlagen', 'save-error');
+        return;
+      }
+      renderSpeakers(result.speakers || []);
+      setViewStatus('speaker-status', `${result.files_rewritten} Dateien neu geschrieben.`);
+      showSpeakerApplyFeedback('✓ Gespeichert', 'save-confirmed');
+    } catch (error) {
+      setViewStatus('speaker-status', error?.message || 'Änderungen konnten nicht gespeichert werden.', true);
+      showSpeakerApplyFeedback('Speichern fehlgeschlagen', 'save-error');
+    } finally {
+      speakerApplyButtons().forEach((button) => { button.disabled = false; });
+      $('apply-speakers').textContent = 'Anwenden';
     }
-    renderSpeakers(result.speakers || []);
-    setViewStatus('speaker-status', `${result.files_rewritten} Dateien neu geschrieben.`);
-  });
+  };
+  $('apply-speakers').addEventListener('click', applySpeakerRenames);
+  $('apply-speakers-floating').addEventListener('click', applySpeakerRenames);
   $('remember-speakers').addEventListener('click', async () => {
     const result = await api.save_voice_profile_names(currentSpeakerNames(), reviewId);
     if (!result.ok) {
