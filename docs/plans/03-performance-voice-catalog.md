@@ -1,6 +1,6 @@
 # BoRT Performance- und Stimmenkatalog-Plan
 
-Stand: 2026-08-19  
+Stand: 2026-08-20
 Branch: `codex/performance-voice-catalog`
 
 ## Umsetzungsstand dieses Branches
@@ -24,6 +24,15 @@ Bereits umgesetzt und getestet:
   in der Oberfläche sichtbar und löschbar.
 - whisper-tagger liefert auf Wunsch die bereits von pyannote berechneten
   Embeddings. Reviews mit diesen Daten werden mit Dateimodus `0600` geschrieben.
+- Transkriptionswerte liegen in einem globalen Optionen-Reiter und werden von
+  Einzel- und Batchverarbeitung gemeinsam genutzt.
+- Lange Sprechertranskripte verwenden den Seiten-Scrollbereich und werden nicht
+  mehr durch einen verschachtelten `60vh`-Bereich abgeschnitten.
+- Der Sprecher-Workflow bietet einen kompakten Picker, direkte Namensbearbeitung
+  im Transkript, gespeicherte Namen, getrennte Hörprobe/Navigation und einen
+  schwebenden Anwenden-Knopf mit unmittelbarem Speicherstatus.
+- Die Oberfläche verwendet ein Mimic-inspiriertes Glassmorphism-/Neumorphism-
+  Design unter Beibehaltung der bestehenden Farben.
 
 Reale Warm-Cache-Smoke-Tests mit 38,3 Sekunden Audio:
 

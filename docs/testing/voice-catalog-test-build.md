@@ -19,23 +19,56 @@ Die Wayland-/NVIDIA-sicheren WebKit-Einstellungen sind in dieser Datei enthalten
 
 ## Empfohlener Funktionstest
 
-1. Backend `whisperX` wählen.
-2. Modell `large-v3-turbo` und Profil `Ausgewogen` wählen.
+1. Im Reiter **Optionen** Backend `whisperX`, Modell `large-v3-turbo` und Profil
+   `Ausgewogen` wählen.
+2. Zu **Transkribieren** wechseln. Die Zusammenfassung muss dieselben globalen
+   Werte zeigen.
 3. Für einen ersten schnellen Lauf `Keine Sprechertrennung` aktivieren.
 4. Danach einen Lauf mit Sprechertrennung und bekannter maximaler Sprecherzahl
    durchführen.
 5. Für den Stimmenkatalog `Stimmprofile lokal erfassen` vor dem Lauf aktivieren.
-6. Die erzeugte Review in der Sprecher-Ansicht öffnen, Namen prüfen und mit
-   `Anwenden` in die Ausgaben schreiben.
-7. Mit `Namen lokal merken` die bestätigten Namen und optionalen Stimmprofile in
-   den lokalen Katalog übernehmen.
-8. Dieselben Personen in einer zweiten Aufnahme testen. Vorschläge müssen
-   anklickbar sein, dürfen aber nie automatisch angewendet werden.
+6. Die erzeugte Review in **Sprecher** öffnen. Die angezeigte Segmentzahl mit
+   der Review vergleichen und bei einem langen Transkript bis zum Ende scrollen.
+7. Einen Sprechernamen direkt im Transkript anklicken. Manuell tippen und danach
+   einen gespeicherten Namen wählen. Alle Vorkommen, Picker und Waveform müssen
+   gemeinsam aktualisiert werden.
+8. **Hörprobe** auslösen. Die Scrollposition darf nicht springen. Die getrennte
+   Aktion **Im Transkript zeigen** muss zum ersten Segment navigieren.
+9. Am Ende des Transkripts den schwebenden **Änderungen anwenden**-Knopf drücken.
+   Er muss `Speichert …` und danach `Gespeichert` oder einen sichtbaren Fehler
+   anzeigen. Review und Ausgabeformate müssen aktualisiert sein.
+10. Mit `Namen lokal merken` die bestätigten Namen und optionalen Stimmprofile in
+    den lokalen Katalog übernehmen.
+11. Dieselben Personen in einer zweiten Aufnahme testen. Vorschläge müssen
+    anklickbar sein, dürfen aber nie automatisch angewendet werden.
+
+## Automatische Prüfungen
+
+```bash
+.venv/bin/python -m pytest -q
+node --test tests/*.test.mjs
+node --check src/bort/web/app.js
+ruff check .
+git diff --check
+```
+
+Die CSS-Datei kann zusätzlich mit `tinycss2.parse_stylesheet` auf Syntaxfehler
+geprüft werden. Ein erfolgreicher Starttest hält die GUI acht Sekunden geöffnet:
+
+```bash
+timeout 8s ./dist/test-build/BoRT-voice-catalog-linux-x86_64
+```
+
+Exitcode `124` bedeutet bei diesem Test, dass die Anwendung bis zum Timeout
+stabil lief. Meldungen zu optionalen GTK-Modulen wie `canberra-gtk-module` sind
+Umgebungswarnungen und kein Startfehler.
 
 ## Voraussetzungen und Grenzen
 
 - whisperX bleibt absichtlich im externen Projekt
   `~/projects/whisper-tagger` mit dessen CUDA-/PyTorch-Umgebung.
+- Der getestete Begleitstand für Decode-Profile, Embeddings und Laufmetrik ist
+  whisper-tagger-Commit `0ec2af0`.
 - Für Diarisierung muss dort der Hugging-Face-Token eingerichtet sein.
 - `whisper-cli` und seine Shared Libraries sind im Testbuild enthalten.
 - GGML-Sprachmodelle sind wegen ihrer Größe nicht eingebettet. Für den CPU-Pfad
@@ -59,4 +92,13 @@ Die Wayland-/NVIDIA-sicheren WebKit-Einstellungen sind in dieser Datei enthalten
 
 ```bash
 ./scripts/build-test-executable.sh
+```
+
+Prüfsumme erzeugen und kontrollieren:
+
+```bash
+cd dist/test-build
+sha256sum BoRT-voice-catalog-linux-x86_64 \
+  > BoRT-voice-catalog-linux-x86_64.sha256
+sha256sum -c BoRT-voice-catalog-linux-x86_64.sha256
 ```
