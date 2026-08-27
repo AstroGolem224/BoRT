@@ -1,6 +1,7 @@
 """Laden und Validieren von Speaker-Review-Sidecar-Dateien (`*.review.json`)."""
 
 import json
+import logging
 import math
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -9,6 +10,8 @@ from .markers import Bookmark, SpeakerMarker
 from .speakers import SpeakerSegment
 from .voice_profiles import VoiceCatalogError, normalize_embedding
 from .writers import FORMATS
+
+logger = logging.getLogger(__name__)
 
 SUPPORTED_SCHEMA_VERSIONS = {1, 2, 3}
 REQUIRED_FIELDS = (
@@ -139,7 +142,17 @@ def load_review(path: Path) -> ReviewData:
             if str(speaker_id) in speaker_map
         }
         if len(speaker_embeddings) != len(raw_embeddings):
-            raise ValueError("speaker_embeddings enthält unbekannte Sprecher-IDs")
+            # Die Diarisierung liefert Embeddings auch fuer Sprecher-IDs, die
+            # kein Segment gewonnen haben; die speaker_map kennt sie nicht.
+            # Ein Wurf machte solche Dateien unlesbar, obwohl nur ein nirgends
+            # referenziertes Embedding fehlt -> verwerfen und protokollieren.
+            unknown = sorted(set(map(str, raw_embeddings)) - set(speaker_embeddings))
+            logger.warning(
+                "Review-Datei %s: Embeddings ohne Eintrag in der speaker_map "
+                "verworfen: %s",
+                path,
+                ", ".join(unknown),
+            )
         raw_metrics = data.get("runtime_metrics", {})
         if not isinstance(raw_metrics, dict):
             raise TypeError("runtime_metrics ist keine Map")

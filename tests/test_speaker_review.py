@@ -1,6 +1,7 @@
 """Tests für das Laden/Validieren von Speaker-Review-Sidecars."""
 
 import json
+import logging
 from pathlib import Path
 
 import pytest
@@ -141,13 +142,23 @@ def test_load_review_v3_validates_voiceprints_and_metrics(tmp_path: Path) -> Non
     assert review.run_metadata["model"] == "large-v3-turbo"
 
 
-def test_load_review_v3_rejects_unknown_embedding_speaker(tmp_path: Path) -> None:
+def test_load_review_v3_drops_unknown_embedding_speaker(tmp_path: Path, caplog) -> None:
+    """Ein Embedding ohne Eintrag in der speaker_map darf die Datei nicht
+    unlesbar machen: die Diarisierung liefert es auch fuer Sprecher, die kein
+    Segment gewonnen haben."""
     audio_path = tmp_path / "session.m4a"
     audio_path.write_bytes(b"")
     path = tmp_path / "session.review.json"
     data = dict(VALID_DATA, audio_path=str(audio_path), schema_version=3)
-    data.update(speaker_embeddings={"UNKNOWN": [1.0, 0.0]}, embedding_model="embed-v1")
+    known_speaker = next(iter(data["speaker_map"]))
+    data.update(
+        speaker_embeddings={known_speaker: [3.0, 4.0], "UNKNOWN": [1.0, 0.0]},
+        embedding_model="embed-v1",
+    )
     path.write_text(json.dumps(data), encoding="utf-8")
 
-    with pytest.raises(ReviewError, match="unbekannte Sprecher"):
-        load_review(path)
+    with caplog.at_level(logging.WARNING, logger="bort.speaker_review"):
+        review = load_review(path)
+
+    assert set(review.speaker_embeddings) == {known_speaker}
+    assert "UNKNOWN" in caplog.text
