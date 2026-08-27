@@ -283,6 +283,24 @@ def transcribe(
     )
     segments, markers, speaker_map = _to_domain(data)
 
+    # Die Diarisierung liefert Embeddings fuer jede gefundene Sprecher-ID, auch
+    # fuer solche, die nach der Mehrheitsabstimmung kein einziges Segment
+    # gewinnen. Die speaker_map kennt sie dann nicht, und load_review() lehnt
+    # die Review-Datei ab. Ein Sprecher ohne Segment ist in der Sprecher-Ansicht
+    # ohnehin weder anzuhoeren noch zu benennen -> Embedding verwerfen.
+    raw_embeddings = dict(data.get("speaker_embeddings") or {})
+    speaker_embeddings = {
+        speaker_id: vector
+        for speaker_id, vector in raw_embeddings.items()
+        if speaker_id in speaker_map
+    }
+    if len(speaker_embeddings) != len(raw_embeddings):
+        dropped = sorted(set(raw_embeddings) - set(speaker_embeddings))
+        logger.info(
+            "whisperX-Backend: Embeddings ohne Segment verworfen: %s",
+            ", ".join(dropped),
+        )
+
     logger.info(
         "whisperX-Backend: %d Segmente, %d Sprecher",
         len(segments),
@@ -294,7 +312,7 @@ def transcribe(
         markers=markers,
         speaker_map=speaker_map,
         language=data.get("language"),
-        speaker_embeddings=dict(data.get("speaker_embeddings") or {}),
+        speaker_embeddings=speaker_embeddings,
         embedding_model=data.get("embedding_model"),
         runtime_metrics=dict(data.get("runtime_metrics") or {}),
     )

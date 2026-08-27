@@ -70,3 +70,26 @@ def test_result_preserves_embedding_metadata(monkeypatch, tmp_path: Path) -> Non
     assert result.speaker_embeddings == {"SPEAKER_00": [1.0, 0.0]}
     assert result.embedding_model == "embed-v1"
     assert result.runtime_metrics == {"total_seconds": 1.25}
+
+
+def test_result_drops_embeddings_without_segments(monkeypatch, tmp_path: Path) -> None:
+    audio = tmp_path / "audio.wav"
+    audio.write_bytes(b"")
+    monkeypatch.setattr(
+        backend,
+        "_run_whisperx",
+        lambda *_args, **_kwargs: {
+            "language": "de",
+            "segments": [
+                {"start": 0, "end": 1, "text": "Hallo", "speaker": "SPEAKER_00"}
+            ],
+            # SPEAKER_01 wurde diarisiert, hat aber kein Segment gewonnen.
+            "speaker_embeddings": {"SPEAKER_00": [1.0, 0.0], "SPEAKER_01": [0.0, 1.0]},
+            "embedding_model": "embed-v1",
+        },
+    )
+
+    result = backend.transcribe(audio, return_embeddings=True)
+
+    assert set(result.speaker_embeddings) == set(result.speaker_map)
+    assert result.speaker_embeddings == {"SPEAKER_00": [1.0, 0.0]}
