@@ -7,6 +7,8 @@ import subprocess
 import threading
 from pathlib import Path
 
+from ..streaming import terminate_process_tree
+
 
 class PlaybackError(Exception):
     """Ungültige oder nicht mögliche Wiedergabe."""
@@ -43,18 +45,13 @@ class AudioPlayer:
                 ],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
+                start_new_session=True,
             )
 
     def stop(self) -> None:
         with self._lock:
             if self._process is not None:
-                try:
-                    self._process.terminate()
-                    self._process.wait(timeout=2)
-                except subprocess.TimeoutExpired:
-                    self._process.kill()
-                except Exception:
-                    pass
+                terminate_process_tree(self._process, grace=2.0)
                 self._process = None
 
     def is_playing(self) -> bool:

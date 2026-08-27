@@ -5,7 +5,13 @@ import logging
 import sys
 from pathlib import Path
 
-from .audio import SUPPORTED_AUDIO_EXTS, AudioError, convert_to_wav, is_supported_audio
+from .audio import (
+    SUPPORTED_AUDIO_EXTS,
+    AudioError,
+    cleanup_wav,
+    convert_to_wav,
+    is_supported_audio,
+)
 from .markers import MarkerError, load_bookmarks, load_markers
 from .speakers import MarkerSpeakerResolver, PlaceholderSpeakerResolver
 from .transcription import TranscriptionError
@@ -17,11 +23,27 @@ from .whisperx_backend import (
 from .whisperx_backend import (
     transcribe as transcribe_whisperx,
 )
-from .writers import write_outputs
+from .writers import FORMATS, write_outputs
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_FORMATS = ["txt", "md", "csv", "tsv"]
+
+
+def parse_formats(raw: str) -> list[str]:
+    """Parst eine kommaseparierte Formatliste und prüft gegen writers.FORMATS."""
+    names = [item.strip().lower() for item in raw.split(",") if item.strip()]
+    # Duplikate entfernen (Reihenfolge erhalten): der transaktionale Publish
+    # legt pro Format genau eine finale Datei an; zweimal txt würde bei den
+    # mit "xb" erzeugten Temp-Dateien als FileExistsError hochschlagen.
+    names = list(dict.fromkeys(names))
+    unknown = [name for name in names if name not in FORMATS]
+    if unknown:
+        raise ValueError(
+            f"Unbekannte(s) Ausgabeformat(e): {', '.join(unknown)}. "
+            f"Möglich: {', '.join(FORMATS)}"
+        )
+    return names
 DEFAULT_WHISPERX_MODEL = "large-v3-turbo"
 
 
@@ -92,7 +114,7 @@ def build_parser() -> argparse.ArgumentParser:
         "-f",
         type=str,
         default=",".join(DEFAULT_FORMATS),
-        help="Kommaseparierte Ausgabeformate: txt,md,csv,tsv",
+        help="Kommaseparierte Ausgabeformate: txt,md,csv,tsv,srt,vtt",
     )
     parser.add_argument(
         "--whisper-cli", type=Path, default=None, help="Pfad zum whisper-cli Binary (whispercpp)"
@@ -143,7 +165,11 @@ def main(argv: list[str] | None = None) -> int:
         format="%(levelname)s: %(message)s",
     )
 
-    formats = [fmt.strip() for fmt in args.formats.split(",") if fmt.strip()]
+    try:
+        formats = parse_formats(args.formats)
+    except ValueError as exc:
+        logger.error("%s", exc)
+        return 1
 
     if not is_supported_audio(args.audio):
         logger.error(
@@ -242,7 +268,7 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.backend == "whispercpp" and not args.keep_wav:
             logger.debug("Lösche temporäre WAV-Datei: %s", wav_path)
-            wav_path.unlink(missing_ok=True)
+            cleanup_wav(wav_path)
 
     except (
         AudioError,

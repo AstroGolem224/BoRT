@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import smtplib
+import ssl
 import subprocess
 from email.message import EmailMessage
 from pathlib import Path
@@ -91,7 +92,10 @@ def send_zip(sender: str, password: str, recipient: str, zip_path: Path) -> None
     )
     try:
         with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=SMTP_TIMEOUT) as smtp:
-            smtp.starttls()
+            # Ohne context prüft smtplib das Serverzertifikat nicht
+            # (check_hostname=False, CERT_NONE) – verschlüsselt, aber
+            # gegen MITM offen. Nicht abschaltbar machen.
+            smtp.starttls(context=ssl.create_default_context())
             smtp.login(sender, password)
             smtp.send_message(message)
     except smtplib.SMTPAuthenticationError as exc:

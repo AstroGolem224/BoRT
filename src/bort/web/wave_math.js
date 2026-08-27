@@ -4,9 +4,13 @@
 
   const finite = (value) => Number.isFinite(Number(value));
   const clamp = (value, low, high) => Math.max(low, Math.min(high, value));
+  // Unter einer Stunde MM:SS, ab einer Stunde H:MM:SS (Aufnahmen > 59:59).
   const formatTime = (value) => {
-    const total = Math.max(0, Number(value) || 0);
-    return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(Math.floor(total % 60)).padStart(2, '0')}`;
+    const total = Math.max(0, Math.floor(Number(value) || 0));
+    const minutes = String(Math.floor(total / 60) % 60).padStart(2, '0');
+    const seconds = String(total % 60).padStart(2, '0');
+    const hours = Math.floor(total / 3600);
+    return hours > 0 ? `${hours}:${minutes}:${seconds}` : `${minutes}:${seconds}`;
   };
 
   const normalizeSegments = (segments, duration) => {

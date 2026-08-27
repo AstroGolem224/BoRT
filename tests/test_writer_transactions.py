@@ -121,3 +121,57 @@ def test_publish_crash_is_recovered_as_complete_set(tmp_path: Path, monkeypatch)
     recover_transactions(tmp_path)
     assert (tmp_path / "aufnahme.txt").read_bytes() == b"alt"
     assert not (tmp_path / "aufnahme.review.json").exists()
+
+
+def test_overwrite_publish_crash_recovers_srt_vtt_predecessors(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Colocate-Transaktion akzeptiert .srt/.vtt-Mitglieder und rollt sie zurück."""
+    (tmp_path / "aufnahme.srt").write_bytes(b"alt-srt")
+    (tmp_path / "aufnahme.vtt").write_bytes(b"alt-vtt")
+    real_replace = os.replace
+    failed = False
+
+    def fail_mid_publish(source: Path | str, target: Path | str) -> None:
+        nonlocal failed
+        if (
+            not failed
+            and Path(source).name.endswith(".tmp")
+            and Path(target).name == "aufnahme.srt"
+        ):
+            failed = True
+            raise OSError("simulierter Crash")
+        real_replace(source, target)
+
+    monkeypatch.setattr(os, "replace", fail_mid_publish)
+    with pytest.raises(OSError, match="simulierter Crash"):
+        write_outputs(
+            [SpeakerSegment(0, 1, "SP1", "neu")],
+            tmp_path,
+            "aufnahme",
+            ["srt", "vtt"],
+            overwrite=True,
+        )
+    # Crash im Commit: die Final-Dateien liegen als Backups vor, Recovery
+    # muss beide Vorgänger zurückstellen.
+    monkeypatch.setattr(os, "replace", real_replace)
+    reports = recover_transactions(tmp_path)
+    assert any("zurückgesetzt" in report for report in reports)
+    assert (tmp_path / "aufnahme.srt").read_bytes() == b"alt-srt"
+    assert (tmp_path / "aufnahme.vtt").read_bytes() == b"alt-vtt"
+    assert not list(tmp_path.glob(".bort-txn-*.json"))
+    assert not list(tmp_path.glob("*.bak"))
+    assert not list(tmp_path.glob("*.tmp"))
+
+
+def test_recovery_treats_unpublished_vtt_as_valid_new_file(tmp_path: Path) -> None:
+    """Manifest mit .vtt-Mitglied validiert und wird beim Recovery gelöscht."""
+    manifest = _manifest(tmp_path, had_predecessor=False)
+    payload = json.loads(manifest.read_text(encoding="utf-8"))
+    payload["files"][0]["final_name"] = "aufnahme.vtt"
+    manifest.write_text(json.dumps(payload), encoding="utf-8")
+    published = tmp_path / "aufnahme.vtt"
+    published.write_bytes(b"neu")
+    recover_transactions(tmp_path)
+    assert not published.exists()
+    assert not manifest.exists()

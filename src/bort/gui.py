@@ -11,7 +11,13 @@ from typing import Any
 
 import customtkinter as ctk
 
-from .audio import SUPPORTED_AUDIO_EXTS, AudioError, convert_to_wav, is_supported_audio
+from .audio import (
+    SUPPORTED_AUDIO_EXTS,
+    AudioError,
+    cleanup_wav,
+    convert_to_wav,
+    is_supported_audio,
+)
 from .config import Config
 from .controller.jobs import (
     JobController,
@@ -244,7 +250,7 @@ def transcription_worker(params: TranscriptionParams, log_queue: queue.Queue) ->
 
         if params.backend != "whisperx" and not params.keep_wav:
             logger.debug("Lösche temporäre WAV-Datei: %s", wav_path)
-            wav_path.unlink(missing_ok=True)
+            cleanup_wav(wav_path)
 
         _progress_cb(100.0, "Fertig")
         # done-Nachricht mit Ergebnisdaten für Speaker-Manager

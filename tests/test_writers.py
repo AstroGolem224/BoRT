@@ -12,7 +12,9 @@ from bort.writers import (
     write_csv,
     write_markdown,
     write_outputs,
+    write_srt,
     write_text,
+    write_vtt,
 )
 
 
@@ -205,6 +207,67 @@ def test_write_outputs_numbers_conflicts() -> None:
         md_path = next(p for p in paths if p.suffix == ".md")
         assert txt_path.stem == "test_1"
         assert md_path.stem == "test_1"
+
+
+def test_write_srt() -> None:
+    segments = [
+        SpeakerSegment(0.0, 5.0, "Alice", "Hallo"),
+        SpeakerSegment(61.25, 122.5, "Bob", "Welt"),
+    ]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "out.srt"
+        write_srt(segments, path)
+        content = path.read_text(encoding="utf-8")
+        assert content == (
+            "1\n00:00:00,000 --> 00:00:05,000\nAlice: Hallo\n\n"
+            "2\n00:01:01,250 --> 00:02:02,500\nBob: Welt\n\n"
+        )
+
+
+def test_write_srt_without_speaker_omits_prefix() -> None:
+    segments = [SpeakerSegment(0.0, 1.5, "", "Einfacher Text")]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "out.srt"
+        write_srt(segments, path)
+        assert path.read_text(encoding="utf-8") == (
+            "1\n00:00:00,000 --> 00:00:01,500\nEinfacher Text\n\n"
+        )
+
+
+def test_write_vtt() -> None:
+    segments = [SpeakerSegment(0.5, 3.75, "Alice", "Hallo")]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        path = Path(tmpdir) / "out.vtt"
+        write_vtt(segments, path)
+        assert path.read_text(encoding="utf-8") == (
+            "WEBVTT\n\n1\n00:00:00.500 --> 00:00:03.750\nAlice: Hallo\n\n"
+        )
+
+
+def test_write_srt_and_vtt_accept_bookmarks_argument_but_ignore_it() -> None:
+    from bort.markers import Bookmark
+
+    segments = [SpeakerSegment(0.0, 2.0, "Alice", "Hallo")]
+    bookmarks = [Bookmark(time=1.0, label="notiz", type="note")]
+    with tempfile.TemporaryDirectory() as tmpdir:
+        srt_path = Path(tmpdir) / "out.srt"
+        vtt_path = Path(tmpdir) / "out.vtt"
+        write_srt(segments, srt_path, bookmarks=bookmarks)
+        write_vtt(segments, vtt_path, bookmarks=bookmarks)
+        assert "notiz" not in srt_path.read_text(encoding="utf-8")
+        assert "notiz" not in vtt_path.read_text(encoding="utf-8")
+
+
+def test_write_outputs_overwrite_publishes_subtitle_pair_transactionally(
+    tmp_path: Path,
+) -> None:
+    segments = [SpeakerSegment(0.0, 1.0, "SP1", "Hallo")]
+    paths = write_outputs(segments, tmp_path, "session", ["srt", "vtt"], overwrite=True)
+    suffixes = sorted(path.suffix for path in paths)
+    assert suffixes == [".srt", ".vtt"]
+    assert all(path.is_file() for path in paths)
+    assert "-->" in (tmp_path / "session.srt").read_text(encoding="utf-8")
+    assert (tmp_path / "session.vtt").read_text(encoding="utf-8").startswith("WEBVTT")
 
 
 def test_unique_base_name() -> None:

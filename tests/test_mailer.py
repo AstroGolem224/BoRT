@@ -1,6 +1,7 @@
 """Mailer: Adress-Validierung, Schlüsselbund-Zugriff (gemockt), SMTP-Versand (gemockt)."""
 
 import smtplib
+import ssl
 import subprocess
 from pathlib import Path
 
@@ -45,8 +46,8 @@ class _FakeSMTP:
     def __exit__(self, *args):
         return False
 
-    def starttls(self):
-        pass
+    def starttls(self, context=None):
+        _FakeSMTP.tls_context = context
 
     def login(self, user, password):
         if password == "falsch":
@@ -71,6 +72,12 @@ def test_send_zip_success(monkeypatch, zip_file):
     message = _FakeSMTP.sent[0]
     assert message["To"] == "du@example.com"
     assert "export.zip" in message["Subject"]
+    # STARTTLS ohne context prüft das Serverzertifikat nicht (MITM auf
+    # App-Passwort und Transkript-Zip): Verifikation muss aktiv sein.
+    context = _FakeSMTP.tls_context
+    assert context is not None
+    assert context.check_hostname is True
+    assert context.verify_mode == ssl.CERT_REQUIRED
 
 
 def test_send_zip_auth_error(monkeypatch, zip_file):

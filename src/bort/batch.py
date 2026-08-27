@@ -25,8 +25,13 @@ def _has_output(
     audio_path: Path,
     output_dir: Path,
     settings: dict | None = None,
+    directories: list[Path] | None = None,
 ) -> bool:
-    """Prüft, ob bereits eine gültige, aktuelle Ausgabedatei existiert."""
+    """Prüft, ob bereits eine gültige, aktuelle Ausgabedatei existiert.
+
+    ``directories`` erlaubt es Scans, das rglob-Listing von ``output_dir``
+    einmalig vorab zu holen, statt es pro Audio-Datei erneut zu durchsuchen.
+    """
     if not output_dir.is_dir() and (
         settings is None or not settings.get("colocate", True)
     ):
@@ -43,10 +48,11 @@ def _has_output(
             )
         if not suffixes:
             return False
-        directories = [
-            output_dir,
-            *(path for path in output_dir.rglob("*") if path.is_dir()),
-        ]
+        if directories is None:
+            directories = [
+                output_dir,
+                *(path for path in output_dir.rglob("*") if path.is_dir()),
+            ]
         for directory in directories:
             recover_transactions(directory)
             if all(
@@ -111,9 +117,23 @@ def scan_pending(
     """Findet Audio-Dateien in ``watch_dir`` ohne gültiges Output."""
     if not watch_dir.is_dir():
         return []
+    # Ohne colocate durchsucht _has_output sonst JEDE Audio-Datei den
+    # kompletten output_dir-Baum per rglob; das Listing wird deshalb einmalig
+    # pro Scan geholt und für alle Audios wiederverwendet.
+    directories: list[Path] | None = None
+    if (
+        settings is not None
+        and not settings.get("colocate", True)
+        and output_dir.is_dir()
+        and expected_artifacts(settings)
+    ):
+        directories = [
+            output_dir,
+            *(path for path in output_dir.rglob("*") if path.is_dir()),
+        ]
     items: list[PendingItem] = []
     for audio_path in iter_audio_paths(watch_dir):
-        if _has_output(audio_path, output_dir, settings):
+        if _has_output(audio_path, output_dir, settings, directories):
             continue
         items.append(PendingItem(audio_path, find_companion_marker(audio_path)))
     return items

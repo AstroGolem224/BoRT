@@ -9,8 +9,8 @@ import bort.app as app
 
 def test_main_passes_file_uri_to_create_window() -> None:
     with (
-        patch.object(app.webview, "create_window") as create_window,
-        patch.object(app.webview, "start"),
+        patch("webview.create_window") as create_window,
+        patch("webview.start"),
         patch.object(app.Bridge, "attach_window"),
     ):
         app.main()

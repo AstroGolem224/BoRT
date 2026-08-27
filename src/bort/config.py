@@ -2,6 +2,8 @@
 
 import json
 import logging
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -33,10 +35,29 @@ class Config:
             self._data = {}
 
     def save(self) -> None:
-        """Speichert die Konfiguration in die Datei."""
+        """Speichert die Konfiguration atomar in die Datei.
+
+        Schreibt zuerst ein Tempfile im selben Verzeichnis und ersetzt die
+        Zieldatei per ``os.replace``, damit ein Absturz mittendrin nie eine
+        halb geschriebene settings.json hinterlässt.
+        """
         try:
-            with self.path.open("w", encoding="utf-8") as f:
-                json.dump(self._data, f, indent=2, ensure_ascii=False)
+            handle = tempfile.NamedTemporaryFile(
+                "w",
+                encoding="utf-8",
+                dir=self.path.parent,
+                prefix=f".{self.path.name}.",
+                delete=False,
+            )
+            temporary = Path(handle.name)
+            try:
+                with handle:
+                    json.dump(self._data, handle, indent=2, ensure_ascii=False)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temporary, self.path)
+            finally:
+                temporary.unlink(missing_ok=True)
         except OSError as exc:
             logger.warning("Konfiguration konnte nicht gespeichert werden: %s", exc)
 

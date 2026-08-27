@@ -162,23 +162,78 @@ def _run_whisperx(
     except RuntimeError as exc:
         raise WhisperXError(str(exc)) from exc
 
-    # stdout may contain stray log lines before the JSON document. Find the
-    # first '{' and parse from there to be robust against stdout pollution.
-    json_start = stdout_data.find("{")
-    if json_start < 0:
-        raise WhisperXError(
-            "whisperX-Backend lieferte kein JSON.\n"
-            f"stdout: {stdout_data[:500]}\nstderr: {stderr_data[:500]}"
-        )
-    json_text = stdout_data[json_start:]
+    return _extract_json_document(stdout_data, stderr_data)
 
-    try:
-        return json.loads(json_text)
-    except json.JSONDecodeError as exc:
-        raise WhisperXError(
-            f"whisperX-Backend lieferte ungültiges JSON: {exc}\n"
-            f"stdout: {stdout_data[:500]}\nstderr: {stderr_data[:500]}"
-        ) from exc
+
+def _extract_json_document(stdout_data: str, stderr_data: str) -> dict:
+    """Findet das JSON-Ergebnis in stdout, das Präfix-Müll enthalten kann.
+
+    whisper-tagger schreibt das Ergebnis als JSON auf stdout; davor können
+    Log-Zeilen stehen, die ebenfalls mit ``{`` beginnen (z.B. Python-Dict-
+    Repräsentationen oder Metrik-Logs). Reihenfolge der Suche:
+
+    1. erste Zeile, die ein JSON-Objekt mit dem erwarteten ``segments``-
+       Schlüssel ist,
+    2. erstes vollständig parsebares Dokument ab einem zeilenstartenden
+       ``{`` (der ganze Rest von stdout muss passen; fängt pretty-printed
+       Ergebnisse ab, denen eine gültige JSON-Störzeile vorausgeht),
+    3. erste gültige JSON-Objekt-Zeile (Fallback, damit auch Ergebnisse
+       ohne ``segments`` nutzbar bleiben),
+    4. sonst ab dem ersten ``{`` an beliebiger Position.
+
+    Gescheiterte Präfix-Zeilen werden als Warnung geloggt; ein reines ``{``
+    (erste Zeile eines pretty-printed Dokuments) nur auf Debug-Stufe.
+    """
+    fallback: dict | None = None
+    for line in stdout_data.splitlines():
+        candidate = line.strip()
+        if not candidate.startswith("{"):
+            continue
+        try:
+            document = json.loads(candidate)
+        except json.JSONDecodeError:
+            if candidate == "{":
+                # Erste Zeile eines pretty-printed Ergebnisses, kein Müll.
+                logger.debug(
+                    "whisperX: Pretty-Print-Fragment übergangen: %.200s", candidate
+                )
+            else:
+                logger.warning(
+                    "whisperX: Zeile vor dem JSON-Ergebnis ignoriert: %.200s", candidate
+                )
+            continue
+        if not isinstance(document, dict):
+            continue
+        if "segments" in document:
+            return document
+        if fallback is None:
+            fallback = document
+    # Pretty-printed (mehrzeiliges) Ergebnis: Gesamt-Parse ab jedem
+    # zeilenstartenden `{`. Eine einzelne Störzeile (z.B. ``{"metrics": 1}``)
+    # ist allein kein gültiges Gesamtdokument, das Ergebnis dahinter schon –
+    # deshalb wird dieser Weg vor dem Zeilen-Fallback probiert.
+    for match in re.finditer(r"(?m)^\s*\{", stdout_data):
+        try:
+            document = json.loads(stdout_data[match.start() :])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(document, dict):
+            return document
+    if fallback is not None:
+        return fallback
+    json_start = stdout_data.find("{")
+    if json_start >= 0:
+        try:
+            document = json.loads(stdout_data[json_start:])
+        except json.JSONDecodeError:
+            pass
+        else:
+            if isinstance(document, dict):
+                return document
+    raise WhisperXError(
+        "whisperX-Backend lieferte kein gültiges JSON.\n"
+        f"stdout: {stdout_data[:500]}\nstderr: {stderr_data[:500]}"
+    )
 
 
 def _build_speaker_map(

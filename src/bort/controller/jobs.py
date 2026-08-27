@@ -10,13 +10,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from ..audio import AudioError, convert_to_wav, is_supported_audio
+from ..audio import AudioError, cleanup_wav, convert_to_wav, is_supported_audio
 from ..markers import Bookmark, MarkerError, load_bookmarks, load_markers
-from ..speakers import MarkerSpeakerResolver, PlaceholderSpeakerResolver, SpeakerMarker
+from ..speakers import MarkerSpeakerResolver, PlaceholderSpeakerResolver, Segment, SpeakerMarker
 from ..transcription import TranscriptionError, transcribe
 from ..whisperx_backend import WhisperXError
 from ..whisperx_backend import transcribe as transcribe_whisperx
 from ..writers import write_outputs
+
+logger = logging.getLogger(__name__)
 
 EventEmitter = Callable[[tuple[Any, ...]], None]
 
@@ -175,19 +177,46 @@ def expected_artifacts(
 
 
 class JobController:
-    """Thread-sicherer gemeinsamer Lock für Einzel- und Batch-Jobs."""
+    """Thread-sicherer gemeinsamer Lock für Einzel- und Batch-Jobs.
+
+    Der Lock gehört dem Thread, der ihn ``acquire``d. Ein Worker-Thread kann
+    den Besitz per ``adopt`` übernehmen; alle anderen Threads (fremder
+    ``release``) werden mit Warnung abgewiesen.
+    """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._config_lock = threading.Lock()
+        self._owner_lock = threading.Lock()
+        self._owner: int | None = None
 
     def acquire(self) -> JobResult:
         if self._lock.acquire(blocking=False):
+            with self._owner_lock:
+                self._owner = threading.get_ident()
             return JobResult(True)
         return JobResult(False, "busy")
 
+    def adopt(self) -> None:
+        """Überträgt den Lock-Besitz auf den aufrufenden Worker-Thread."""
+        if not self._lock.locked():
+            return
+        with self._owner_lock:
+            self._owner = threading.get_ident()
+
     def release(self) -> None:
-        if self._lock.locked():
+        with self._owner_lock:
+            if not self._lock.locked():
+                return
+            if self._owner is not None and self._owner != threading.get_ident():
+                logger.warning(
+                    "Job-Lock-Freigabe durch fremden Thread verweigert "
+                    "(Owner=%s, Aufrufer=%s).",
+                    self._owner,
+                    threading.get_ident(),
+                )
+                return
+            self._owner = None
             self._lock.release()
 
     @property
@@ -225,8 +254,22 @@ def _setup_worker_logging(emit: EventEmitter, verbose: bool) -> tuple[logging.Ha
     return handler, previous_level
 
 
-def transcription_worker(params: TranscriptionParams, emit: EventEmitter) -> None:
-    """Führt einen Transkriptionslauf aus und emittiert strukturierte Events."""
+class _JobAborted(Exception):
+    """Internes Signal: Nutzer hat den Lauf abgebrochen (kein Fehlerfall)."""
+
+
+def transcription_worker(
+    params: TranscriptionParams,
+    emit: EventEmitter,
+    abort_event: threading.Event | None = None,
+) -> None:
+    """Führt einen Transkriptionslauf aus und emittiert strukturierte Events.
+
+    Mit ``abort_event`` wird ein Nutzer-Abbruch unterstützt: Der Event wird
+    zwischen den Stufen (Audio → Transkribieren → Schreiben) geprüft; aktive
+    Subprozesse sterben zusätzlich über die Streaming-Registry. Beim Abbruch
+    emittiert der Worker ``("cancelled", ...)`` statt eines Fehler-Events.
+    """
     logger = logging.getLogger(__name__)
     bookmarks: list[Bookmark] = []
     if params.backend == "whisperx" and params.marker_path:
@@ -240,12 +283,23 @@ def transcription_worker(params: TranscriptionParams, emit: EventEmitter) -> Non
     wx_embeddings: dict[str, list[float]] | None = None
     wx_embedding_model: str | None = None
     wx_runtime_metrics: dict[str, float] | None = None
+    wav_path: Path | None = None
 
     def progress(percent: float, phase: str) -> None:
         emit(("progress", percent, phase))
 
+    def checkpoint() -> None:
+        """Bricht zwischen den Stufen sauber ab (abort-vs-error)."""
+        if abort_event is not None and abort_event.is_set():
+            raise _JobAborted()
+
+    def partial_segment(segment: Segment) -> None:
+        """Reicht ein live fertig transkribiertes Segment als Event weiter."""
+        emit(("partial", {"start": segment.start, "end": segment.end, "text": segment.text}))
+
     handler, previous_level = _setup_worker_logging(emit, params.verbose)
     try:
+        checkpoint()
         effective_output = params.audio_path.parent if params.colocate else params.output_dir
         if params.backend == "whisperx":
             logger.info(
@@ -254,6 +308,9 @@ def transcription_worker(params: TranscriptionParams, emit: EventEmitter) -> Non
                 params.language or "auto",
             )
             progress(0.0, "Initialisiere")
+            # Gate direkt vor dem Subprozess: Ein Cancel nach dem letzten
+            # Checkpoint greift sofort statt erst nach erneutem Klick.
+            checkpoint()
             result = transcribe_whisperx(
                 audio_path=params.audio_path,
                 language=params.language if params.language != "auto" else None,
@@ -292,6 +349,7 @@ def transcription_worker(params: TranscriptionParams, emit: EventEmitter) -> Non
         else:
             if not params.model_path:
                 raise TranscriptionError("Modell-Pfad fehlt (für whisper.cpp-Backend erforderlich)")
+            checkpoint()
             logger.info("Konvertiere Audio: %s", params.audio_path)
             progress(0.0, "Konvertiere Audio")
             wav_path = convert_to_wav(
@@ -304,12 +362,17 @@ def transcription_worker(params: TranscriptionParams, emit: EventEmitter) -> Non
                 params.task,
             )
             progress(0.0, "Transkribiere")
+            # Gate zwischen Konvertierung und whisper-cli-Start: Nach der
+            # WAV-Erzeugung geklickter Cancel bricht sofort sauber ab,
+            # statt erst whisper-cli laufen zu lassen.
+            checkpoint()
             result = transcribe(
                 wav_path=wav_path,
                 model_path=params.model_path,
                 language=params.language,
                 task=params.task,
                 progress_cb=progress,
+                segment_cb=partial_segment,
             )
             logger.info("Transkription abgeschlossen (%d Segmente).", len(result.segments))
             logger.info("Erkannte Sprache: %s", result.language or "unbekannt")
@@ -321,6 +384,7 @@ def transcription_worker(params: TranscriptionParams, emit: EventEmitter) -> Non
                 logger.info("Keine Marker-Datei angegeben – verwende Fallback-Sprecher.")
                 resolver = PlaceholderSpeakerResolver()
             speaker_segments = resolver.resolve(result.segments)
+            checkpoint()
         progress(95.0, "Speichere")
         review_data = _review_data(
             params,
@@ -346,8 +410,10 @@ def transcription_worker(params: TranscriptionParams, emit: EventEmitter) -> Non
         logger.info("Ausgabe gespeichert in %s:", output_location)
         for path in output_paths:
             logger.info("  - %s", path)
-        if params.backend != "whisperx" and not params.keep_wav:
-            wav_path.unlink(missing_ok=True)
+        # Kein checkpoint() mehr nach write_outputs: Die Ausgaben liegen
+        # vollständig auf der Platte, ein „cancelled“ würde die UI den Lauf
+        # als ergebnislos anzeigen lassen (ohne output_location), während die
+        # Dateien den nächsten Lauf blockieren.
         progress(100.0, "Fertig")
         emit(
             (
@@ -369,11 +435,23 @@ def transcription_worker(params: TranscriptionParams, emit: EventEmitter) -> Non
                 },
             )
         )
-    except (AudioError, MarkerError, TranscriptionError, WhisperXError) as exc:
-        emit(("error", str(exc)))
+    except _JobAborted:
+        emit(("cancelled", "Transkription wurde abgebrochen."))
     except Exception as exc:
-        emit(("error", f"Unerwarteter Fehler: {exc}"))
+        # Nutzer-Abbruch geht vor: Auch wenn der abgebrochene Subprozess als
+        # Prozessfehler (z.B. SIGTERM -> Exit -15) ankommt, gilt er nicht
+        # als Fehler, sondern als sauberer Abbruch.
+        if abort_event is not None and abort_event.is_set():
+            emit(("cancelled", "Transkription wurde abgebrochen."))
+        elif isinstance(exc, (AudioError, MarkerError, TranscriptionError, WhisperXError)):
+            emit(("error", str(exc)))
+        else:
+            emit(("error", f"Unerwarteter Fehler: {exc}"))
     finally:
+        # Auch der Abbruch- und der Fehlerpfad müssen die temporäre WAV
+        # loswerden; sonst bleiben pro Abbruch hunderte MB in /tmp liegen.
+        if wav_path is not None and not params.keep_wav:
+            cleanup_wav(wav_path)
         root = logging.getLogger()
         root.removeHandler(handler)
         root.setLevel(previous_level)

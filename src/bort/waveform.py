@@ -12,6 +12,8 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
+from .streaming import terminate_process_tree
+
 SAMPLE_RATE = 8000
 SAMPLES_PER_BUCKET = 4000
 MAX_BUCKETS = 4000
@@ -93,30 +95,10 @@ def terminate_process(
     process: subprocess.Popen[bytes],
     lock: threading.Lock | threading.RLock | None = None,
 ) -> None:
-    """Beendet einen Prozess idempotent mit Eskalation."""
+    """Beendet einen Waveform-Prozess idempotent über die Prozessgruppe."""
     process_lock = lock or threading.RLock()
     with process_lock:
-        if process.poll() is not None:
-            return
-        try:
-            process.terminate()
-        except OSError:
-            pass
-        try:
-            process.wait(timeout=5)
-            return
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-        if process.poll() is not None:
-            return
-        try:
-            process.kill()
-        except OSError:
-            pass
-        try:
-            process.wait(timeout=5)
-        except (OSError, subprocess.TimeoutExpired):
-            pass
+        terminate_process_tree(process)
 
 
 def _probe_duration(audio_path: Path) -> float | None:
@@ -214,6 +196,7 @@ def extract_peaks(
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
+            start_new_session=True,
         )
     except (FileNotFoundError, OSError) as exc:
         raise WaveformError("ffmpeg nicht gefunden oder konnte nicht gestartet werden.") from exc

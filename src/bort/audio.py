@@ -1,12 +1,18 @@
 """Audio-Vorverarbeitung: Audio (mp3/m4a/aac/...) → WAV für whisper.cpp."""
 
+import contextlib
 import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 
+from .streaming import register_process, terminate_process_tree, unregister_process
+
 # Von ffmpeg/whisper unterstützte Eingabeformate.
 SUPPORTED_AUDIO_EXTS = {".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg", ".opus", ".wma"}
+
+# Gesamt-Budget für eine ffmpeg-Konvertierung (sehr großzügig für lange Audios).
+CONVERT_TIMEOUT = 1800.0
 
 
 class AudioError(Exception):
@@ -57,7 +63,9 @@ def convert_to_wav(audio_path: Path, output_dir: Path | None = None) -> Path:
         )
 
     if output_dir is None:
-        output_dir = Path(tempfile.gettempdir())
+        # Eigener 0700-Ordner je Lauf: ein fester Name in /tmp wäre für jeden
+        # lokalen Nutzer lesbar und ließe sich vorab blockieren.
+        output_dir = Path(tempfile.mkdtemp(prefix="bort-wav-"))
     else:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -78,15 +86,42 @@ def convert_to_wav(audio_path: Path, output_dir: Path | None = None) -> Path:
         str(wav_path),
     ]
 
-    result = subprocess.run(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        check=False,
-    )
+    try:
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+    except OSError as exc:
+        raise AudioError(f"ffmpeg konnte nicht gestartet werden: {exc}") from exc
+    if not register_process(process):
+        terminate_process_tree(process)
+        raise AudioError("Audio-Konvertierung wurde abgebrochen.")
+    try:
+        try:
+            _stdout_text, stderr_text = process.communicate(timeout=CONVERT_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            terminate_process_tree(process)
+            _stdout_text, stderr_text = process.communicate()
+            raise AudioError(
+                f"ffmpeg Zeitüberschreitung nach {CONVERT_TIMEOUT:g}s "
+                "bei der Audio-Konvertierung."
+            )
+    finally:
+        unregister_process(process)
 
-    if result.returncode != 0:
-        raise AudioError(f"ffmpeg Fehler: {result.stderr}")
+    if process.returncode != 0:
+        raise AudioError(f"ffmpeg Fehler: {stderr_text}")
 
     return wav_path
+
+
+def cleanup_wav(wav_path: Path) -> None:
+    """Löscht eine temporäre WAV-Datei samt ihres leeren mkdtemp-Ordners."""
+    Path(wav_path).unlink(missing_ok=True)
+    with contextlib.suppress(OSError):
+        # rmdir entfernt nur den leeren Ordner; ein vom Nutzer gewähltes
+        # Zielverzeichnis (keep_wav) bleibt damit unangetastet.
+        Path(wav_path).parent.rmdir()

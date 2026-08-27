@@ -130,6 +130,9 @@ class _FakeProcess:
         self.stderr = _FakePipe(stderr)
         self.returncode = returncode
         self.finished = False
+        # Existiert nie als echte pid: terminate_process_tree fällt damit auf
+        # den send_signal-Fallback zurück.
+        self.pid = 999_999_999
 
     def poll(self):
         return self.returncode if self.finished else None
@@ -137,6 +140,9 @@ class _FakeProcess:
     def wait(self, timeout=None):
         self.finished = True
         return self.returncode
+
+    def send_signal(self, _sig: int) -> None:
+        self.terminate()
 
     def terminate(self) -> None:
         self.finished = True

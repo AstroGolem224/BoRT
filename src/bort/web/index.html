@@ -8,16 +8,16 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Hell/Dunkel wechseln" title="Hell/Dunkel wechseln"></button>
+  <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Hell/Dunkel wechseln" title="Hell/Dunkel wechseln (Strg+T)"></button>
   <div class="app-shell">
     <aside class="sidebar" aria-label="Navigation">
       <div class="brand"><img class="brand-mark" src="icon.png" alt=""><span>BoR Transcriber</span></div>
       <nav>
-        <button class="nav-item active" data-view="transcribe"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-4-8v4m8-4v4M6 14a6 6 0 0 0 12 0M12 20v2m-4 0h8"/></svg><span>Transkribieren</span></button>
-        <button class="nav-item" data-view="batch"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v5H4zM4 14h16v5H4zM7 7.5h.01M7 16.5h.01"/></svg><span>Batch</span></button>
-        <button class="nav-item" data-view="library"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2 2h9v11H3zM7 13h10M7 17h7"/></svg><span>Bibliothek</span></button>
-        <button class="nav-item" data-view="speakers"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 20v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 10a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm7-1a3 3 0 0 0 0-6m2 11a4 4 0 0 1 4 4v2"/></svg><span>Sprecher</span></button>
-        <button class="nav-item" data-view="settings"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5zM19 12l2-1-2-4-2 .5-1.5-1.5.5-2h-4l-.5 2L9 7.5 7 7 5 11l2 1-2 1 2 4 2-.5 1.5 1.5-.5 2h4l.5-2 1.5-1.5 2 .5 2-4z"/></svg><span>Optionen</span></button>
+        <button class="nav-item active" data-view="transcribe" title="Transkribieren (Alt+1)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-4-8v4m8-4v4M6 14a6 6 0 0 0 12 0M12 20v2m-4 0h8"/></svg><span>Transkribieren</span></button>
+        <button class="nav-item" data-view="batch" title="Batch (Alt+2)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v5H4zM4 14h16v5H4zM7 7.5h.01M7 16.5h.01"/></svg><span>Batch</span></button>
+        <button class="nav-item" data-view="library" title="Bibliothek (Alt+3)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2 2h9v11H3zM7 13h10M7 17h7"/></svg><span>Bibliothek</span></button>
+        <button class="nav-item" data-view="speakers" title="Sprecher (Alt+4)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 20v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 10a4 4 0 1 0 0-8 4 4 0 0 0 0 8zm7-1a3 3 0 0 0 0-6m2 11a4 4 0 0 1 4 4v2"/></svg><span>Sprecher</span></button>
+        <button class="nav-item" data-view="settings" title="Optionen (Alt+5)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5zM19 12l2-1-2-4-2 .5-1.5-1.5.5-2h-4l-.5 2L9 7.5 7 7 5 11l2 1-2 1 2 4 2-.5 1.5 1.5-.5 2h4l.5-2 1.5-1.5 2 .5 2-4z"/></svg><span>Optionen</span></button>
       </nav>
       <p class="sidebar-foot"><span class="status-dot"></span>Lokale Transkription</p>
     </aside>
@@ -27,17 +27,17 @@
         <p id="status" class="status" role="status">Bereit.</p>
         <div class="global-settings-strip"><span><strong>Globale Optionen</strong><span class="global-settings-summary"></span></span><button class="open-settings" type="button">⚙ Ändern</button></div>
         <div class="form-grid">
-          <div class="card files-card transcribe-files-card">
+          <div class="card files-card transcribe-files-card" data-drop="audio">
             <h2><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2 2h9v11H3z"/></svg>Dateien</h2>
             <div class="two-cols">
-              <label>Audio-Datei <span class="required">*</span><span class="picker"><input id="audio-path" readonly><button id="pick-audio" type="button">Auswählen</button></span></label>
-              <label>Marker-Datei <span class="muted">optional</span><span class="picker"><input id="marker-path" readonly><button id="pick-marker" type="button">Auswählen</button></span></label>
+              <label data-drop="audio">Audio-Datei <span class="required">*</span><span class="picker"><input id="audio-path" readonly><button id="pick-audio" type="button">Auswählen</button></span></label>
+              <label data-drop="marker">Marker-Datei <span class="muted">optional</span><span class="picker"><input id="marker-path" readonly><button id="pick-marker" type="button">Auswählen</button></span></label>
             </div>
             <p id="output-mode-hint" class="muted compact-hint"></p>
           </div>
         </div>
-        <div class="card run-card"><div class="progress-track" aria-label="Fortschritt"><div id="progress-bar"></div></div><div class="progress-line"><span id="progress-label">Bereit</span><span id="progress-value">0 %</span></div><button id="start" class="primary" type="button">Transkription starten</button></div>
-        <div class="card logs-card"><h2>Protokoll</h2><pre id="log" aria-live="polite"></pre></div>
+        <div class="card run-card"><div class="progress-track" aria-label="Fortschritt"><div id="progress-bar"></div></div><div class="progress-line"><span id="progress-label">Bereit</span><span id="progress-value">0 %</span></div><div class="actions"><button id="cancel-transcription" type="button" disabled title="Einzeltranskription abbrechen (Strg+E)">Abbrechen</button><button id="start" class="primary" type="button" title="Transkription starten (Strg+E)">Transkription starten</button></div></div>
+        <div class="card logs-card"><h2>Protokoll</h2><p id="log-capped" class="log-truncated" hidden>— Ältere Einträge abgeschnitten —</p><pre id="log" aria-live="polite"></pre></div>
         <div id="preview" class="card preview" hidden><h2>Vorschau</h2><p id="output-location"></p><div id="segments"></div></div>
       </section>
       <section id="speakers" class="view" aria-labelledby="speakers-title">
@@ -106,7 +106,6 @@
             <div id="speaker-transcript" class="speaker-transcript"></div>
           </div>
         </div>
-        <div id="speaker-save-toast" class="speaker-save-toast" role="status" aria-live="polite" aria-atomic="true" hidden></div>
         <button id="apply-speakers-floating" class="primary speaker-floating-apply" type="button" title="Änderungen anwenden (Strg+S)" aria-live="polite" hidden>✓ Änderungen anwenden</button>
       </section>
       <section id="library" class="view" aria-labelledby="library-title">
@@ -143,7 +142,7 @@
         <div class="global-settings-strip"><span><strong>Globale Optionen</strong><span class="global-settings-summary"></span></span><button class="open-settings" type="button">⚙ Ändern</button></div>
         <div class="card">
           <h2><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h7l2 2h9v11H3z"/></svg>Quelle</h2>
-          <label>Sync-Ordner<span class="picker"><input id="watch-path" readonly><button id="pick-watch" type="button">Sync-Ordner wählen</button><button id="scan-batch" type="button">Scannen</button></span></label>
+          <label data-drop="watch">Sync-Ordner<span class="picker"><input id="watch-path" readonly><button id="pick-watch" type="button">Sync-Ordner wählen</button><button id="scan-batch" type="button">Scannen</button></span></label>
           <p id="unstable-count" class="muted"></p>
         </div>
         <div class="card">
@@ -153,9 +152,9 @@
         <div class="card run-card">
           <div class="progress-track" aria-label="Batch-Fortschritt"><div id="batch-progress-bar"></div></div>
           <div class="progress-line"><span id="batch-progress-label">Bereit</span><span id="batch-progress-value">0 %</span></div>
-          <div class="actions"><button id="cancel-batch" type="button" disabled>Abbrechen</button><button id="start-batch" class="primary" type="button" disabled>Alle verarbeiten</button></div>
+          <div class="actions"><button id="cancel-batch" type="button" disabled title="Batch abbrechen (Strg+B)">Abbrechen</button><button id="start-batch" class="primary" type="button" disabled title="Alle verarbeiten (Strg+B)">Alle verarbeiten</button></div>
         </div>
-        <div class="card logs-card"><h2>Batch-Protokoll</h2><pre id="batch-log" aria-live="polite"></pre></div>
+        <div class="card logs-card"><h2>Batch-Protokoll</h2><p id="batch-log-capped" class="log-truncated" hidden>— Ältere Einträge abgeschnitten —</p><pre id="batch-log" aria-live="polite"></pre></div>
       </section>
       <section id="settings" class="view" aria-labelledby="settings-title">
         <header><h1 id="settings-title">Transkriptionsoptionen</h1><p>Zentrale Voreinstellungen für die gesamte App.</p></header>
@@ -169,7 +168,7 @@
           </div>
           <div class="card">
             <h2><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h14v18H5zM8 8h8M8 12h8M8 16h5"/></svg>Ausgabe</h2>
-            <fieldset><legend>Formate <span class="required">*</span></legend><label class="check"><input type="checkbox" name="format" value="txt" checked> TXT</label><label class="check"><input type="checkbox" name="format" value="md"> Markdown</label><label class="check"><input type="checkbox" name="format" value="csv"> CSV</label><label class="check"><input type="checkbox" name="format" value="tsv"> TSV</label></fieldset>
+            <fieldset><legend>Formate <span class="required">*</span></legend><label class="check"><input type="checkbox" name="format" value="txt" checked> TXT</label><label class="check"><input type="checkbox" name="format" value="md"> Markdown</label><label class="check"><input type="checkbox" name="format" value="csv"> CSV</label><label class="check"><input type="checkbox" name="format" value="tsv"> TSV</label><label class="check"><input type="checkbox" name="format" value="srt"> SRT-Untertitel</label><label class="check"><input type="checkbox" name="format" value="vtt"> VTT-Untertitel</label></fieldset>
             <label class="check"><input id="colocate" type="checkbox" checked> Neben der Audio-Datei speichern</label>
             <label>Globaler Ausgabeordner<span class="picker"><input id="output-path" readonly><button id="pick-output" type="button">Auswählen</button><button id="open-output" type="button" title="Im Dateimanager öffnen">📂 Öffnen</button></span></label>
             <label class="check"><input id="keep-wav" type="checkbox"> Konvertierte WAV-Datei behalten</label>
@@ -184,6 +183,16 @@
       </section>
     </main>
   </div>
+  <div id="confirm-dialog" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="confirm-dialog-message" hidden>
+    <div class="confirm-modal">
+      <p id="confirm-dialog-message"></p>
+      <div class="actions">
+        <button id="confirm-cancel" type="button">Abbrechen</button>
+        <button id="confirm-ok" type="button" class="primary">Bestätigen</button>
+      </div>
+    </div>
+  </div>
+  <div id="speaker-save-toast" class="speaker-save-toast" role="status" aria-live="polite" aria-atomic="true" hidden></div>
   <script src="wave_math.js"></script>
   <script src="app.js"></script>
 </body>

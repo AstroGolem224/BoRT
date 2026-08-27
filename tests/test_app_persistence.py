@@ -97,6 +97,16 @@ def test_save_output_options_persists_immediately(tmp_path):
     assert settings["colocate"] is False
 
 
+def test_save_output_options_persists_subtitle_formats(tmp_path):
+    bridge = _bridge_with_config(tmp_path)
+    result = bridge.save_output_options({"formats": ["srt", "vtt", "exe"]})
+    assert result == {"ok": True}
+
+    reloaded = Bridge(config=Config(path=tmp_path / "settings.json"))
+    settings = reloaded.initial_state()["settings"]
+    assert settings["formats"] == ["srt", "vtt"]  # "exe" verworfen
+
+
 def test_save_output_options_rejects_non_dict(tmp_path):
     bridge = _bridge_with_config(tmp_path)
     assert bridge.save_output_options("quatsch")["ok"] is False

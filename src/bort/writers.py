@@ -1,4 +1,4 @@
-"""Ausgabeformate: Text, Markdown, CSV/TSV (optional mit Bookmarks)."""
+"""Ausgabeformate: Text, Markdown, CSV/TSV, SRT/VTT-Untertitel (optional mit Bookmarks)."""
 
 import csv
 import fcntl
@@ -21,7 +21,9 @@ BOOKMARK_INDICATOR = "🔖"  # Bookmark-Marker im Transkript
 logger = logging.getLogger(__name__)
 _MANIFEST_RE = re.compile(r"^\.bort-txn-([0-9a-f]{32})\.json$")
 _ORPHAN_RE = re.compile(r"^(.+)\.([0-9a-f]{32})\.(tmp|bak)$")
-_ALLOWED_FINAL_SUFFIXES = (".txt", ".md", ".csv", ".tsv", ".review.json", ".markers.json")
+_ALLOWED_FINAL_SUFFIXES = (
+    ".txt", ".md", ".csv", ".tsv", ".srt", ".vtt", ".review.json", ".markers.json"
+)
 _STALE_SECONDS = 3600
 
 
@@ -39,6 +41,15 @@ def _format_time(seconds: float) -> str:
     hours, remainder = divmod(int(seconds), 3600)
     minutes, secs = divmod(remainder, 60)
     return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+
+
+def _format_subtitle_time(seconds: float, ms_separator: str) -> str:
+    """Formatiert Sekunden als HH:MM:SS<sep>mmm für Untertitelformate."""
+    total_ms = max(0, round(seconds * 1000))
+    hours, remainder_ms = divmod(total_ms, 3_600_000)
+    minutes, remainder_ms = divmod(remainder_ms, 60_000)
+    secs, ms = divmod(remainder_ms, 1000)
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}{ms_separator}{ms:03d}"
 
 
 def _merge_bookmarks(
@@ -158,6 +169,46 @@ def write_csv(
                 )
 
 
+def _subtitle_text(speaker: str, text: str) -> str:
+    """Cue-Text mit Sprecher-Präfix, sofern ein Sprecher vorhanden ist."""
+    return f"{speaker}: {text}" if speaker else text
+
+
+def write_srt(
+    segments: list[SpeakerSegment],
+    path: Path,
+    bookmarks: list[Bookmark] | None = None,
+) -> None:
+    """Schreibt eine SRT-Untertiteldatei (HH:MM:SS,mmm).
+
+    Bookmarks werden absichtlich ignoriert; Untertitel enthalten nur Sprach-Cues.
+    """
+    del bookmarks
+    with path.open("w", encoding="utf-8", newline="") as f:
+        for index, seg in enumerate(segments, start=1):
+            start = _format_subtitle_time(seg.start, ",")
+            end = _format_subtitle_time(seg.end, ",")
+            f.write(f"{index}\n{start} --> {end}\n{_subtitle_text(seg.speaker, seg.text)}\n\n")
+
+
+def write_vtt(
+    segments: list[SpeakerSegment],
+    path: Path,
+    bookmarks: list[Bookmark] | None = None,
+) -> None:
+    """Schreibt eine WebVTT-Untertiteldatei (HH:MM:SS.mmm).
+
+    Bookmarks werden absichtlich ignoriert; Untertitel enthalten nur Sprach-Cues.
+    """
+    del bookmarks
+    with path.open("w", encoding="utf-8", newline="") as f:
+        f.write("WEBVTT\n\n")
+        for index, seg in enumerate(segments, start=1):
+            start = _format_subtitle_time(seg.start, ".")
+            end = _format_subtitle_time(seg.end, ".")
+            f.write(f"{index}\n{start} --> {end}\n{_subtitle_text(seg.speaker, seg.text)}\n\n")
+
+
 def _date_subdir(output_dir: Path) -> Path:
     """Erzeugt den Datums-Unterordner für Ausgabedateien."""
     subdir = output_dir / datetime.now().strftime("%Y-%m-%d")
@@ -180,6 +231,8 @@ FORMATS = {
     "md": (".md", write_markdown),
     "csv": (".csv", lambda segs, path, **kw: write_csv(segs, path, ",", **kw)),
     "tsv": (".tsv", lambda segs, path, **kw: write_csv(segs, path, "\t", **kw)),
+    "srt": (".srt", write_srt),
+    "vtt": (".vtt", write_vtt),
 }
 
 
@@ -441,7 +494,7 @@ def write_outputs(
         output_dir: Zielverzeichnis. Bei ``overwrite=False`` das Elternverzeichnis
             für einen Datums-Unterordner, bei ``overwrite=True`` das exakte Ziel.
         base_name: Basisname für die Ausgabedateien.
-        formats: Liste der gewünschten Formate ('txt', 'md', 'csv', 'tsv').
+        formats: Liste der gewünschten Formate ('txt', 'md', 'csv', 'tsv', 'srt', 'vtt').
         bookmarks: Optionale Bookmarks aus der Android-Partner-App.
         review_data: Optionales Speaker-Review-Sidecar-Dict.
         overwrite: Überschreibt exakt ``base_name`` in ``output_dir``.

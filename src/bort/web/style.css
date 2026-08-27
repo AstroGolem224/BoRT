@@ -256,6 +256,16 @@ h2 svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-wid
 }
 .card:first-of-type, .form-grid .card { margin: 0; }
 
+/* Drag & Drop: aufgenommene Drop-Zonen ([data-drop]) leuchten dezent auf. */
+.drop-hover {
+  outline: 2px dashed var(--accent);
+  outline-offset: -7px;
+  box-shadow: var(--raised), inset 0 1px 0 rgba(255, 255, 255, 0.055),
+    inset 0 0 34px var(--accent-glow);
+}
+[data-drop] label { transition: background-color 120ms ease; }
+.drop-hover .picker input { border-color: var(--accent); }
+
 /* --- Formulare --- */
 label { display: grid; gap: 8px; margin: 15px 0; color: var(--muted); font-size: 13px; }
 label:first-of-type { margin-top: 0; }
@@ -414,6 +424,9 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .preview { margin-bottom: 40px; }
 .preview h2 { color: var(--accent); }
 #output-location { color: var(--muted); overflow-wrap: anywhere; margin: 0 0 14px; font-size: 13px; }
+.logs-card pre:empty::before { content: 'Noch keine Aktivität'; color: var(--muted); }
+.log-truncated { margin: 0 0 8px; color: var(--muted); font-size: 12px; }
+#segments:empty::before { content: 'Noch kein Ergebnis'; color: var(--muted); display: block; padding: 4px 0; font-size: 13px; }
 
 .segment {
   display: grid;
@@ -645,6 +658,35 @@ button.speaker-choice.active {
 }
 .speaker-save-toast[hidden] { display: none !important; }
 .speaker-save-toast.visible { opacity: 1; transform: translateY(0) scale(1); }
+
+/* Bestätigungs-Modal (Ersatz für window.confirm), Glasstil via CSS-Variablen. */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(3, 7, 18, 0.55);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+[data-theme="light"] .modal-backdrop { background: rgba(202, 214, 228, 0.5); }
+.confirm-modal {
+  max-width: min(420px, calc(100vw - 48px));
+  padding: 22px 24px;
+  border-radius: var(--radius);
+  border: 1px solid var(--glass-border-bright);
+  background:
+    linear-gradient(135deg, rgba(34, 211, 238, 0.09), rgba(139, 92, 246, 0.12)),
+    var(--glass-deep);
+  box-shadow: var(--raised);
+  backdrop-filter: blur(18px) saturate(135%);
+  -webkit-backdrop-filter: blur(18px) saturate(135%);
+  color: var(--text);
+}
+.confirm-modal p { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+.confirm-modal .actions { margin-top: 20px; }
 .segment { transition: background 0.4s ease; border-radius: 8px; }
 .segment-highlight { background: var(--accent-glow); }
 

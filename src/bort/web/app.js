@@ -13,7 +13,11 @@
   let mediaFailed = false;
   let waveCache = null;
   let activeBatchId = null;
+  let batchNeedsRescan = false;
   let pendingBatchItems = [];
+  let activeJobId = null;
+  const completedBatchItems = new Set();
+  const batchOutcomeMap = new Map();
   let voiceCatalogNames = [];
   let reviewSpeakers = [];
   let speakerDraftNames = new Map();
@@ -23,7 +27,9 @@
   let speakerApplyFeedbackTimer = null;
   let speakerSaveToastTimer = null;
 
-  // Theme (hell/dunkel) – rein clientseitig via localStorage, Default dunkel.
+  // Theme: Die Config (Backend) ist die Quelle; localStorage dient nur als
+  // Lese-Cache vor dem Bridge-Handshake, damit beim Start kein Hell/Dunkel-
+  // Flackern entsteht. Nach dem Handshake gewinnt die Backend-Initialisierung.
   const applyTheme = (theme) => {
     document.documentElement.setAttribute('data-theme', theme === 'light' ? 'light' : 'dark');
     if (window.BortWave && document.getElementById('player-wave')) {
@@ -47,11 +53,22 @@
     node.textContent = message;
     node.classList.toggle('error', error);
   };
-  const appendLog = (line) => {
-    const log = $('log');
-    log.textContent = `${log.textContent}${line}\n`.slice(-30000);
+  // Kappt Protokolle bei 30000 Zeichen und meldet eine Kappung sichtbar.
+  const capLogText = (current, addition) => {
+    const limit = 30000;
+    const combined = `${current}${addition}\n`;
+    return combined.length > limit
+      ? { text: combined.slice(-limit), capped: true }
+      : { text: combined, capped: false };
+  };
+  const appendCappedLog = (logId, hintId, line) => {
+    const log = $(logId);
+    const { text, capped } = capLogText(log.textContent, line);
+    log.textContent = text;
+    $(hintId).hidden = !capped;
     log.scrollTop = log.scrollHeight;
   };
+  const appendLog = (line) => appendCappedLog('log', 'log-capped', line);
   const setProgress = (percent, label) => {
     const value = Math.max(0, Math.min(100, Number(percent) || 0));
     $('progress-bar').style.width = `${value}%`;
@@ -64,14 +81,12 @@
     $('batch-progress-value').textContent = `${Math.round(value)} %`;
     $('batch-progress-label').textContent = label || '';
   };
-  const appendBatchLog = (line) => {
-    const log = $('batch-log');
-    log.textContent = `${log.textContent}${line}\n`.slice(-30000);
-    log.scrollTop = log.scrollHeight;
-  };
+  const appendBatchLog = (line) => appendCappedLog('batch-log', 'batch-log-capped', line);
   const formatTime = (value) => {
-    const total = Math.max(0, Number(value) || 0);
-    return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(Math.floor(total % 60)).padStart(2, '0')}`;
+    const total = Number.isFinite(+value) ? Math.max(0, +value) : 0;
+    const minutesSeconds = `${String(Math.floor(total / 60) % 60).padStart(2, '0')}:${String(Math.floor(total % 60)).padStart(2, '0')}`;
+    const hours = Math.floor(total / 3600);
+    return hours > 0 ? `${hours}:${minutesSeconds}` : minutesSeconds;
   };
   const callBridge = (name, args) => new Promise((resolve, reject) => {
     const id = `bort-${++callNumber}`;
@@ -192,8 +207,14 @@
       remove.title = `${profile.name} aus dem lokalen Katalog löschen`;
       remove.setAttribute('aria-label', remove.title);
       remove.addEventListener('click', async () => {
-        if (!window.confirm(`Lokales Profil „${profile.name}“ wirklich löschen?`)) return;
-        const result = await api.delete_voice_profile(profile.id);
+        if (!(await confirmDialog(`Lokales Profil „${profile.name}“ wirklich löschen?`))) return;
+        let result;
+        try {
+          result = await api.delete_voice_profile(profile.id);
+        } catch (error) {
+          showActionFailure(error);
+          return;
+        }
         if (!result.ok) {
           setViewStatus('speaker-status', result.error || 'Profil konnte nicht gelöscht werden.', true);
           return;
@@ -204,6 +225,37 @@
       chip.append(label, remove);
       profileList.append(chip);
     });
+  };
+  // Eine Segmentzeile für Live-Vorschau und finale Vorschau (eine Quelle).
+  const buildSegmentRow = (segment) => {
+    const data = segment || {};
+    const row = document.createElement('div');
+    row.className = 'segment';
+    const timestamp = document.createElement('span');
+    timestamp.className = 'timestamp';
+    timestamp.textContent = `${formatTime(data.start)} – ${formatTime(data.end)}`;
+    const speaker = document.createElement('span');
+    speaker.className = 'speaker';
+    speaker.textContent = data.speaker || 'Sprecher';
+    const text = document.createElement('span');
+    text.textContent = data.text || '';
+    row.append(timestamp, speaker, text);
+    return row;
+  };
+  // Live-Teilergebnisse während des Laufs: eine Zeile pro partial-Event;
+  // die finale Vorschau bei 'done' überschreibt den Live-Stapel komplett.
+  const appendLiveSegment = (segment) => {
+    $('preview').hidden = false;
+    $('segments').append(buildSegmentRow(segment));
+  };
+  const resetLivePreview = () => {
+    $('preview').hidden = true;
+    $('segments').textContent = '';
+    $('output-location').textContent = '';
+  };
+  const finishActiveJob = () => {
+    activeJobId = null;
+    $('cancel-transcription').disabled = true;
   };
   const renderPreview = (segments, outputLocation) => {
     const preview = $('preview');
@@ -216,19 +268,7 @@
       const fragment = document.createDocumentFragment();
       const end = Math.min(index + 50, segments.length);
       for (; index < end; index += 1) {
-        const segment = segments[index] || {};
-        const row = document.createElement('div');
-        row.className = 'segment';
-        const timestamp = document.createElement('span');
-        timestamp.className = 'timestamp';
-        timestamp.textContent = `${formatTime(segment.start)} – ${formatTime(segment.end)}`;
-        const speaker = document.createElement('span');
-        speaker.className = 'speaker';
-        speaker.textContent = segment.speaker || 'Sprecher';
-        const text = document.createElement('span');
-        text.textContent = segment.text || '';
-        row.append(timestamp, speaker, text);
-        fragment.append(row);
+        fragment.append(buildSegmentRow(segments[index]));
       }
       target.append(fragment);
       if (index < segments.length) requestAnimationFrame(renderBatch);
@@ -832,7 +872,9 @@
       const outcome = document.createElement('span');
       outcome.className = 'batch-outcome';
       outcome.dataset.audioName = item.audio_name;
-      outcome.textContent = 'Ausstehend';
+      const knownOutcome = batchOutcomeMap.get(item.audio_name);
+      outcome.textContent = knownOutcome?.text || 'Ausstehend';
+      outcome.classList.toggle('error', Boolean(knownOutcome?.error));
       row.append(names, outcome);
       target.append(row);
     });
@@ -843,7 +885,7 @@
       target.append(empty);
     }
     $('pending-count').textContent = `${items.length} ${items.length === 1 ? 'Datei' : 'Dateien'}`;
-    $('start-batch').disabled = items.length === 0 || Boolean(activeBatchId);
+    $('start-batch').disabled = items.length === 0 || Boolean(activeBatchId) || batchNeedsRescan;
   };
   const activateView = (viewId) => {
     document.querySelectorAll('.nav-item').forEach(
@@ -1045,14 +1087,32 @@
             titleRow.replaceChildren(title, renameButton);
             return;
           }
-          const result = await api.rename_library_item(item.item_id, value);
+          let result;
+          try {
+            result = await api.rename_library_item(item.item_id, value);
+          } catch (error) {
+            showActionFailure(error);
+            titleRow.replaceChildren(title, renameButton);
+            return;
+          }
           if (!result.ok) {
             setViewStatus('library-status', result.error || 'Umbenennen fehlgeschlagen.', true);
             titleRow.replaceChildren(title, renameButton);
             return;
           }
-          setViewStatus('library-status', `Umbenannt zu „${result.name}". Liste wird aktualisiert …`);
-          $('scan-library').click();
+          // ponytail: bewusst kein Voll-Rescan — gezielter Item-Update erhält
+          // Auswahl, Player-Zustand und Listensortierung (Reihenfolge bleibt stabil).
+          item.name = result.name;
+          if (result.audio_url) item.audio_url = result.audio_url;
+          title.textContent = result.name;
+          // Editor rausschmeißen und Titelzeile wiederherstellen.
+          titleRow.replaceChildren(title, renameButton);
+          const selectTitle = exportable
+            ? `${result.name} für Export auswählen`
+            : `${result.name}: kein Transkript für den Export vorhanden`;
+          select.title = selectTitle;
+          select.setAttribute('aria-label', selectTitle);
+          setViewStatus('library-status', `Umbenannt zu „${result.name}“.`);
         };
         editor.addEventListener('keydown', (event) => {
           if (event.key === 'Enter') finish(true);
@@ -1085,7 +1145,13 @@
         review.type = 'button';
         review.textContent = 'Review öffnen';
         review.addEventListener('click', async () => {
-          const result = await api.open_library_review(item.item_id);
+          let result;
+          try {
+            result = await api.open_library_review(item.item_id);
+          } catch (error) {
+            showActionFailure(error);
+            return;
+          }
           if (!result.ok) {
             setViewStatus('library-status', result.error || 'Review konnte nicht geladen werden.', true);
             return;
@@ -1100,7 +1166,13 @@
       transcribe.className = 'primary';
       transcribe.textContent = 'Transkribieren';
       transcribe.addEventListener('click', async () => {
-        const result = await api.prepare_library_transcription(item.item_id);
+        let result;
+        try {
+          result = await api.prepare_library_transcription(item.item_id);
+        } catch (error) {
+          showActionFailure(error);
+          return;
+        }
         if (!result.ok) {
           setViewStatus('library-status', result.error || 'Aufnahme nicht mehr verfügbar.', true);
           return;
@@ -1118,6 +1190,7 @@
     updateExportButton();
   };
   const setBatchOutcome = (audioName, text, error = false) => {
+    batchOutcomeMap.set(audioName, { text, error });
     document.querySelectorAll('.batch-outcome').forEach((node) => {
       if (node.dataset.audioName === audioName) {
         node.textContent = text;
@@ -1134,15 +1207,31 @@
       if (!waiter) return;
       bridgeWaiters.delete(payload.id);
       if (payload.ok) waiter.resolve(payload.result); else waiter.reject(new Error(payload.error));
-    } else if (payload.type === 'progress') setProgress(payload.percent, payload.phase);
+    }     else if (payload.type === 'progress') setProgress(payload.percent, payload.phase);
     else if (payload.type === 'log') appendLog(payload.message);
-    else if (payload.type === 'error') {
+    else if (payload.type === 'partial') {
+      // Live-Teilergebnis (whisper.cpp): Zeile in die Vorschau hängen.
+      appendLiveSegment(payload);
+    } else if (payload.type === 'error') {
       setStatus(payload.message, true);
+      finishActiveJob();
+      resetLivePreview();
       $('start').disabled = false;
       appendLog(`FEHLER: ${payload.message}`);
+    } else if (payload.type === 'cancelled') {
+      // Nutzer-Abbruch: kein Fehler-Ton, Zustand sauber zurücksetzen.
+      // Ohne aktiven Job ist das Event veraltet/doppelt: ignorieren, sonst
+      // würde ein laufender Job mit deaktiviertem Button zurückbleiben.
+      if (!activeJobId) return;
+      setStatus(payload.message);
+      $('progress-label').textContent = 'Abgebrochen';
+      finishActiveJob();
+      resetLivePreview();
+      $('start').disabled = false;
     } else if (payload.type === 'done') {
       setStatus(payload.message);
       setProgress(100, 'Fertig');
+      finishActiveJob();
       $('start').disabled = false;
       renderPreview(payload.segments || [], payload.output_location);
     } else if (payload.type === 'batch_item_start') {
@@ -1156,6 +1245,7 @@
     } else if (payload.type === 'batch_item_done') {
       const failed = String(payload.message || '').startsWith('Fehler:');
       setBatchOutcome(payload.audio_name, payload.message || 'Fertig', failed);
+      if (!failed) completedBatchItems.add(payload.audio_name);
     } else if (payload.type === 'batch_item_error') {
       setBatchOutcome(payload.audio_name, payload.message || 'Fehler', true);
       appendBatchLog(`FEHLER ${payload.audio_name}: ${payload.message}`);
@@ -1163,25 +1253,35 @@
       setBatchOutcome(payload.audio_name, `Übersprungen: ${payload.message}`);
     } else if (payload.type === 'batch_finished') {
       activeBatchId = null;
-      pendingBatchItems = [];
+      batchNeedsRescan = true;
+      pendingBatchItems = pendingBatchItems.filter((item) => !completedBatchItems.has(item.audio_name));
+      completedBatchItems.clear();
       $('cancel-batch').disabled = true;
-      $('start-batch').disabled = true;
       setBatchProgress(100, 'Batch beendet');
-      setViewStatus('batch-status', `${payload.succeeded} OK, ${payload.failed} Fehler, ${payload.skipped} übersprungen`);
-      renderBatchItems([]);
-      $('batch-items').querySelector('.empty-state').textContent = 'Batch beendet. Vor dem nächsten Lauf bitte neu scannen.';
+      const rescanHint = pendingBatchItems.length ? ' — Erneut scannen für erneuten Lauf.' : '';
+      setViewStatus('batch-status', `${payload.succeeded} OK, ${payload.failed} Fehler, ${payload.skipped} übersprungen${rescanHint}`);
+      renderBatchItems(pendingBatchItems);
+      if (!pendingBatchItems.length) {
+        $('batch-items').querySelector('.empty-state').textContent = 'Batch beendet. Vor dem nächsten Lauf bitte neu scannen.';
+      }
     }
   };
+  let pendingTheme = null;
+  let themeToggledSinceReady = false;
   $('theme-toggle').addEventListener('click', () => {
     currentTheme = currentTheme === 'light' ? 'dark' : 'light';
     applyTheme(currentTheme);
     try { localStorage.setItem('bort-theme', currentTheme); } catch (_) { /* egal */ }
-    if (api) api.set_theme(currentTheme);
+    themeToggledSinceReady = true;
+    if (api) api.set_theme(currentTheme).catch(showActionFailure);
+    // Vor dem Bridge-Handshake liegt noch keine Backend-Autorität vor; die
+    // Wahl wird nachgereicht, sobald die Bridge steht.
+    else pendingTheme = currentTheme;
   });
   document.querySelectorAll('.nav-item').forEach((button) => button.addEventListener('click', async () => {
     const current = document.querySelector('.view.active');
     if (current && current.id === 'speakers' && button.dataset.view !== 'speakers' && api) {
-      await api.stop_playback();
+      await api.stop_playback().catch(showActionFailure);
     }
     if (current && current.id === 'library' && button.dataset.view !== 'library') {
       libraryStop();
@@ -1201,9 +1301,12 @@
   document.querySelectorAll('.open-settings').forEach((button) => {
     button.addEventListener('click', () => activateView('settings'));
   });
-  // Alle Transkriptionsoptionen sofort appweit persistieren.
-  const persistGlobalOptions = () => {
-    renderGlobalSettingsSummary();
+  // Alle Transkriptionsoptionen appweit persistieren. Das Schreiben in die
+  // Config-Datei ist gedebounced (400 ms, letzter Wert gewinnt): schnelles
+  // Durchklicken mehrerer Optionen löst nur einen Save aus.
+  let persistOptionsTimer = null;
+  const saveOutputOptionsNow = () => {
+    persistOptionsTimer = null;
     if (!api) return;
     const s = formSettings();
     api.save_output_options(s).then((result) => {
@@ -1218,6 +1321,19 @@
       setViewStatus('settings-status', 'Optionen konnten nicht gespeichert werden.', true);
     });
   };
+  // Löscht einen laufenden Debounce-Timer sofort aus: vor Transkriptions-
+  // und Batch-Starts sowie beim Entladen der Seite darf kein Save mehr
+  // ausstehen, sonst starten die Jobs mit veralteten persistierten Optionen.
+  const flushSettings = () => {
+    if (!persistOptionsTimer) return;
+    clearTimeout(persistOptionsTimer);
+    saveOutputOptionsNow();
+  };
+  const persistGlobalOptions = () => {
+    renderGlobalSettingsSummary();
+    if (persistOptionsTimer) clearTimeout(persistOptionsTimer);
+    persistOptionsTimer = setTimeout(saveOutputOptionsNow, 400);
+  };
   document.querySelectorAll(
     '#backend, #language, #task, #whisperx-model, #performance-profile, '
     + '#min-speakers, #max-speakers, input[name="format"], #keep-wav, #verbose, '
@@ -1230,31 +1346,76 @@
   }));
   [['audio', 'pick-audio'], ['marker', 'pick-marker'], ['output', 'pick-output'], ['model', 'pick-model']]
     .forEach(([kind, id]) => $(id).addEventListener('click', async () => {
-      const result = await api[`pick_${kind}`]();
+      let result;
+      try {
+        result = await api[`pick_${kind}`]();
+      } catch (error) {
+        showActionFailure(error);
+        return;
+      }
       if (result && result.ok) {
         setPath(kind, result.path);
         if (kind === 'model') renderGlobalSettingsSummary();
       }
     }));
   $('open-output').addEventListener('click', async () => {
-    const result = await api.open_output_dir($('colocate').checked);
+    let result;
+    try {
+      result = await api.open_output_dir($('colocate').checked);
+    } catch (error) {
+      showActionFailure(error);
+      return;
+    }
     if (result && !result.ok) {
       setViewStatus('settings-status', result.error || 'Ordner konnte nicht geöffnet werden.', true);
     }
   });
   $('start').addEventListener('click', async () => {
+    $('start').disabled = true;
+    // Der Abbrechen-Button wird erst nach bestätigter job_id freigeschaltet;
+    // vorher würde sein Guard (ohne activeJobId) still abbrechen.
     $('preview').hidden = true;
     $('segments').textContent = '';
     $('output-location').textContent = '';
     $('log').textContent = '';
+    $('log-capped').hidden = true;
     setProgress(0, 'Warte');
     setStatus('Transkription wird gestartet …');
-    const result = await api.start_transcription(formSettings());
-    if (!result.ok) {
-      setStatus((result.errors || [result.error || 'Start fehlgeschlagen.']).join(' '), true);
+    flushSettings();
+    let result;
+    try {
+      result = await api.start_transcription(formSettings());
+    } catch (error) {
+      finishActiveJob();
+      $('start').disabled = false;
+      showActionFailure(error);
       return;
     }
-    $('start').disabled = true;
+    if (!result.ok) {
+      setStatus((result.errors || [result.error || 'Start fehlgeschlagen.']).join(' '), true);
+      finishActiveJob();
+      $('start').disabled = false;
+      return;
+    }
+    activeJobId = result.job_id;
+    $('cancel-transcription').disabled = false;
+  });
+  $('cancel-transcription').addEventListener('click', async () => {
+    if (!activeJobId) return;
+    $('cancel-transcription').disabled = true;
+    setStatus('Abbruch angefordert …');
+    let result;
+    try {
+      result = await api.cancel_transcription();
+    } catch (error) {
+      $('cancel-transcription').disabled = !activeJobId;
+      showActionFailure(error);
+      return;
+    }
+    if (!result.ok) {
+      $('cancel-transcription').disabled = !activeJobId;
+      setStatus(result.error || 'Abbruch nicht möglich.', true);
+    }
   });
   const acceptReviewResult = (result) => {
     reviewId = result.review_id;
@@ -1271,7 +1432,13 @@
     requestReviewWaveform();
   };
   $('pick-review').addEventListener('click', async () => {
-    const result = await api.pick_review_file();
+    let result;
+    try {
+      result = await api.pick_review_file();
+    } catch (error) {
+      showActionFailure(error);
+      return;
+    }
     if (!result || result.cancelled) return;
     if (!result.ok) {
       setViewStatus('speaker-status', result.error || 'Review konnte nicht geladen werden.', true);
@@ -1286,7 +1453,14 @@
       input.value = reviewBaseName;
       return;
     }
-    const result = await api.rename_review(reviewId, newBase);
+    let result;
+    try {
+      result = await api.rename_review(reviewId, newBase);
+    } catch (error) {
+      input.value = reviewBaseName;
+      showActionFailure(error);
+      return;
+    }
     if (!result.ok) {
       input.value = reviewBaseName;
       setViewStatus('speaker-status', result.error || 'Umbenennen fehlgeschlagen.', true);
@@ -1314,7 +1488,7 @@
       $('player-bar').classList.remove('waveform-ready');
       requestReviewWaveform();
     }
-    setViewStatus('speaker-status', `Dateien umbenannt zu „${result.base_name}".`);
+    setViewStatus('speaker-status', `Dateien umbenannt zu „${result.base_name}“.`);
   };
   $('review-name').addEventListener('keydown', (event) => {
     if (event.key === 'Enter') event.target.blur();
@@ -1450,23 +1624,178 @@
     floating.classList.add(className);
     speakerApplyFeedbackTimer = setTimeout(resetSpeakerApplyLabels, 2200);
   };
-  const showSpeakerSaveToast = () => {
+  const showToast = (message) => {
     clearTimeout(speakerSaveToastTimer);
     const toast = $('speaker-save-toast');
-    const filename = reviewBaseName
-      ? `${reviewBaseName}.review.json`
-      : 'Review';
     toast.classList.remove('visible');
     toast.hidden = false;
     toast.textContent = '';
     requestAnimationFrame(() => {
-      toast.textContent = `${filename} saved`;
+      toast.textContent = message;
       toast.classList.add('visible');
     });
     speakerSaveToastTimer = setTimeout(() => {
       toast.classList.remove('visible');
     }, 2200);
   };
+  const showActionFailure = (error) => {
+    showToast(`Aktion fehlgeschlagen: ${error?.message || String(error || 'Unbekannter Fehler')}`);
+  };
+
+  // --- Drag & Drop für Audiodateien ---
+  // WebKitGTK füllt dataTransfer.files OHNE nutzbare Pfade; die einzige
+  // verlässliche Quelle ist text/uri-list mit file://-URIs (GNOME/GTK liefert
+  // diese auch für Dateimanager-Drops mit).
+  // Audio-Erweiterungen prüft das Backend gegen SUPPORTED_AUDIO_EXTS und
+  // liefert bei Abweisung eine Meldung mit den unterstützten Formaten.
+  const MARKER_DROP_EXTENSION = '.json';
+  const uriListToPaths = (uriList) => {
+    const paths = [];
+    String(uriList || '').split(/\r?\n/).forEach((line) => {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#')) return;
+      try {
+        const url = new URL(trimmed);
+        if (url.protocol !== 'file:') return;
+        const path = decodeURIComponent(url.pathname);
+        if (path.startsWith('/')) paths.push(path);
+      } catch (_) { /* ungültige Zeile überspringen */ }
+    });
+    return paths;
+  };
+  const lowerExtension = (path) => {
+    const dot = path.lastIndexOf('.');
+    return dot > path.lastIndexOf('/') ? path.slice(dot).toLowerCase() : '';
+  };
+  const dropZoneNode = (element) => (
+    element instanceof Element ? element.closest('[data-drop]') : null
+  );
+  let dropHighlightNode = null;
+  const clearDropHighlight = () => {
+    dropHighlightNode?.classList.remove('drop-hover');
+    dropHighlightNode = null;
+  };
+  const acceptDroppedPath = async (kind, path) => {
+    let result;
+    try {
+      result = await api.set_dropped_path(kind, path);
+    } catch (error) {
+      showActionFailure(error);
+      return;
+    }
+    if (!result || !result.ok) {
+      showToast(result?.error || 'Abgelegter Pfad konnte nicht übernommen werden.');
+      return;
+    }
+    setPath(kind, result.path);
+  };
+  const handleDroppedPaths = (zone, paths) => {
+    if (zone === 'watch') {
+      // ponytail: Die Batch-Pipeline scannt ausschließlich Sync-ORDNER
+      // (scan_pending iteriert Verzeichnisse); einzelne Dateien ließen sich
+      // nur mit Pipeline-Umbau als Einzellauf-Kandidaten anhängen. Diese
+      // Grenze ist hier bewusst dokumentiert statt halbfertig umgangen.
+      const unusable = paths.find((p) => !p.endsWith('/'));
+      if (paths.length > 1) {
+        showToast('Bitte nur einen Sync-Ordner gleichzeitig hierher ziehen.');
+        return;
+      }
+      const candidate = paths[0].replace(/\/$/, '');
+      if (unusable && lowerExtension(candidate)) {
+        showToast('Der Batch verarbeitet Dateien aus dem Sync-Ordner; einzelne Dateien werden nicht unterstützt.');
+        return;
+      }
+      acceptDroppedPath('watch', candidate);
+      return;
+    }
+    if (zone === 'marker') {
+      const valid = paths.filter((item) => lowerExtension(item) === MARKER_DROP_EXTENSION);
+      if (!valid.length) {
+        showToast('Hier passen nur JSON-Marker-Dateien (.json).');
+        return;
+      }
+      acceptDroppedPath(zone, valid[0]);
+      return;
+    }
+    // Audio-Zone ohne clientseitiges Extension-Gate: das Backend entscheidet
+    // (SUPPORTED_AUDIO_EXTS) und dessen Fehlermeldung wird als Toast gezeigt.
+    acceptDroppedPath(zone, paths[0]);
+  };
+  document.addEventListener('dragover', (event) => {
+    const node = dropZoneNode(event.target);
+    if (!node) return;
+    // Ohne preventDefault feuert kein drop-Event.
+    event.preventDefault();
+    if (dropHighlightNode !== node) {
+      clearDropHighlight();
+      dropHighlightNode = node;
+      node.classList.add('drop-hover');
+    }
+  });
+  document.addEventListener('dragleave', (event) => {
+    if (event.relatedTarget && dropHighlightNode?.contains(event.relatedTarget)) return;
+    clearDropHighlight();
+  });
+  document.addEventListener('drop', (event) => {
+    clearDropHighlight();
+    // Globales preventDefault: sonst würde ein Fehldrop das WebView zur
+    // Datei navigieren. Nur Zonen nehmen den Inhalt an.
+    event.preventDefault();
+    const node = dropZoneNode(event.target);
+    if (!node || !api) return;
+    const paths = uriListToPaths(event.dataTransfer?.getData('text/uri-list') || '');
+    if (paths.length) handleDroppedPaths(node.dataset.drop, paths);
+  });
+  document.addEventListener('dragend', clearDropHighlight);
+
+  // Wiederverwendbarer Bestätigungsdialog als Ersatz für window.confirm:
+  // resolve(true) nach „Bestätigen“, resolve(false) nach „Abbrechen“ oder
+  // Escape. Der Fokus liegt sicherheitshalber auf Abbrechen.
+  let confirmResolver = null;
+  let confirmOpener = null;
+  const closeConfirmDialog = (value) => {
+    if (!confirmResolver) return;
+    $('confirm-dialog').hidden = true;
+    document.body.style.overflow = '';
+    const resolve = confirmResolver;
+    confirmResolver = null;
+    const opener = confirmOpener;
+    confirmOpener = null;
+    if (opener && typeof opener.focus === 'function') opener.focus();
+    resolve(value);
+  };
+  const confirmDialog = (message) => new Promise((resolve) => {
+    // Offenen Dialog zuverlässig schließen statt den Resolver zu verwerfen
+    // (würde als hängender Promise enden).
+    if (confirmResolver) closeConfirmDialog(false);
+    confirmOpener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    confirmResolver = resolve;
+    $('confirm-dialog-message').textContent = message;
+    $('confirm-dialog').hidden = false;
+    document.body.style.overflow = 'hidden';
+    $('confirm-cancel').focus();
+  });
+  $('confirm-ok').addEventListener('click', () => closeConfirmDialog(true));
+  $('confirm-cancel').addEventListener('click', () => closeConfirmDialog(false));
+  document.addEventListener('keydown', (event) => {
+    if ($('confirm-dialog').hidden) return;
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeConfirmDialog(false);
+    } else if (event.key === 'Enter' && !event.ctrlKey && !event.altKey && !event.metaKey) {
+      event.preventDefault();
+      closeConfirmDialog(true);
+    } else if (event.key === 'Tab') {
+      // Fokus-Falle: Tab rotiert innerhalb des Modals.
+      event.preventDefault();
+      const order = [$('confirm-cancel'), $('confirm-ok')];
+      const index = order.indexOf(document.activeElement);
+      const next = event.shiftKey
+        ? (index <= 0 ? order.length - 1 : index - 1)
+        : (index === order.length - 1 || index < 0 ? 0 : index + 1);
+      order[next].focus();
+    }
+  });
   const applySpeakerRenames = async () => {
     if (!reviewId || speakerApplyButtons().some((button) => button.disabled)) return;
     clearTimeout(speakerApplyFeedbackTimer);
@@ -1485,7 +1814,7 @@
       renderSpeakers(result.speakers || []);
       setViewStatus('speaker-status', `${result.files_rewritten} Dateien neu geschrieben.`);
       showSpeakerApplyFeedback('✓ Gespeichert', 'save-confirmed');
-      showSpeakerSaveToast();
+      showToast(`${reviewBaseName ? `${reviewBaseName}.review.json` : 'Review'} gespeichert`);
     } catch (error) {
       setViewStatus('speaker-status', error?.message || 'Änderungen konnten nicht gespeichert werden.', true);
       showSpeakerApplyFeedback('Speichern fehlgeschlagen', 'save-error');
@@ -1506,8 +1835,84 @@
     event.preventDefault();
     if (!event.repeat) applySpeakerRenames();
   });
+
+  // --- Globale Tastenkürzel ---
+  // Reine Auflösung ohne DOM-Zugriff: aus einem Keydown-Objekt eine Aktion
+  // bauen. View-Reihenfolge folgt der Sidebar-Navigation (Alt+1..5).
+  const resolveShortcut = (event) => {
+    const key = typeof event.key === 'string' ? event.key.toLowerCase() : '';
+    const mod = event.ctrlKey || event.metaKey;
+    if (mod && !event.altKey) {
+      if (key === 'e') return { action: 'transcribe-start' };
+      if (key === 'b') return { action: 'batch-toggle' };
+      if (key === 't') return { action: 'theme-toggle' };
+      return null;
+    }
+    if (event.altKey && !mod && /^[1-5]$/.test(key)) {
+      return {
+        action: 'view-switch',
+        view: ['transcribe', 'batch', 'library', 'speakers', 'settings'][Number(key) - 1],
+      };
+    }
+    return null;
+  };
+  // Strg+E ist doppeldeutig: ohne laufenden Einzeljob Start, mit Lauf Abbruch.
+  const transcribeShortcutAction = ({ hasAudio, running }) => {
+    if (running) return 'cancel';
+    return hasAudio ? 'start' : 'need-audio';
+  };
+  const runShortcut = (shortcut) => {
+    // Klick auf die vorhandenen Buttons statt Logik-Duplikat: alle
+    // Nebeneffekte (Playback-Stopp, Fortschrittsreset …) bleiben identisch.
+    if (shortcut.action === 'view-switch') {
+      document.querySelector(`.nav-item[data-view="${shortcut.view}"]`)?.click();
+      return;
+    }
+    if (shortcut.action === 'theme-toggle') {
+      $('theme-toggle').click();
+      return;
+    }
+    if (shortcut.action === 'transcribe-start') {
+      const plan = transcribeShortcutAction({
+        hasAudio: Boolean($('audio-path').value.trim()),
+        running: Boolean(activeJobId),
+      });
+      if (plan === 'need-audio') {
+        setStatus('Bitte zuerst eine Audio-Datei wählen.');
+        return;
+      }
+      if (plan === 'cancel') $('cancel-transcription').click();
+      else if (!$('start').disabled) $('start').click();
+      return;
+    }
+    if (shortcut.action === 'batch-toggle') {
+      if (activeBatchId ? !$('cancel-batch').disabled : !$('start-batch').disabled) {
+        $(activeBatchId ? 'cancel-batch' : 'start-batch').click();
+      }
+    }
+  };
+  document.addEventListener('keydown', (event) => {
+    // Escape bleibt bei den Dialog-/Rename-Eingabehandlern; im offenen Modal
+    // dürfen gar keine Shortcuts feuern.
+    if (!$('confirm-dialog').hidden || event.key === 'Escape') return;
+    if (event.repeat) return;
+    const target = event.target;
+    const typing = target instanceof HTMLElement
+      && (target.matches('input:not([readonly]), textarea, select') || target.isContentEditable);
+    if (typing) return;
+    const shortcut = resolveShortcut(event);
+    if (!shortcut) return;
+    event.preventDefault();
+    runShortcut(shortcut);
+  });
   $('remember-speakers').addEventListener('click', async () => {
-    const result = await api.save_voice_profile_names(currentSpeakerNames(), reviewId);
+    let result;
+    try {
+      result = await api.save_voice_profile_names(currentSpeakerNames(), reviewId);
+    } catch (error) {
+      showActionFailure(error);
+      return;
+    }
     if (!result.ok) {
       setViewStatus('speaker-status', result.error || 'Namen konnten nicht gespeichert werden.', true);
       return;
@@ -1519,23 +1924,45 @@
     setViewStatus('speaker-status', `${result.saved.length} Namen lokal gespeichert${voiceprints}.`);
   });
   $('pick-watch').addEventListener('click', async () => {
-    const result = await api.pick_watch_dir();
+    let result;
+    try {
+      result = await api.pick_watch_dir();
+    } catch (error) {
+      showActionFailure(error);
+      return;
+    }
     if (result && result.ok) $('watch-path').value = result.path || '';
   });
   $('scan-batch').addEventListener('click', async () => {
     setViewStatus('batch-status', 'Ordner wird gescannt …');
-    const result = await api.scan_batch(formSettings());
+    flushSettings();
+    let result;
+    try {
+      result = await api.scan_batch(formSettings());
+    } catch (error) {
+      showActionFailure(error);
+      return;
+    }
     if (!result.ok) {
       setViewStatus('batch-status', result.error || 'Scan fehlgeschlagen.', true);
       return;
     }
     pendingBatchItems = result.items || [];
+    completedBatchItems.clear();
+    batchOutcomeMap.clear();
+    batchNeedsRescan = false;
     renderBatchItems(pendingBatchItems);
     $('unstable-count').textContent = `${result.skipped_unstable || 0} noch instabile Dateien übersprungen.`;
     setViewStatus('batch-status', `${pendingBatchItems.length} ausstehende Dateien gefunden.`);
   });
   $('pick-library').addEventListener('click', async () => {
-    const result = await api.pick_library_dir();
+    let result;
+    try {
+      result = await api.pick_library_dir();
+    } catch (error) {
+      showActionFailure(error);
+      return;
+    }
     if (result && result.ok) $('library-path').value = result.path || '';
   });
   $('library-select-all').addEventListener('click', () => {
@@ -1549,19 +1976,44 @@
     libraryStop();
     const speakerAudio = audioEl();
     speakerAudio.pause();
-    if (api) await api.stop_playback();
+    if (api) {
+      try {
+        await api.stop_playback();
+      } catch (error) {
+        showActionFailure(error);
+        return;
+      }
+    }
     setViewStatus('library-status', 'Alle Wiedergaben gestoppt.');
   });
   $('pick-export').addEventListener('click', async () => {
-    const result = await api.pick_export_dir();
+    let result;
+    try {
+      result = await api.pick_export_dir();
+    } catch (error) {
+      showActionFailure(error);
+      return;
+    }
     if (result && result.ok) $('export-path').value = result.path || '';
   });
   $('open-export').addEventListener('click', async () => {
-    const result = await api.open_export_dir();
+    let result;
+    try {
+      result = await api.open_export_dir();
+    } catch (error) {
+      showActionFailure(error);
+      return;
+    }
     if (result && !result.ok) setViewStatus('library-status', result.error || 'Ordner konnte nicht geöffnet werden.', true);
   });
   $('export-selection').addEventListener('click', async () => {
-    const result = await api.export_library_zip([...librarySelection]);
+    let result;
+    try {
+      result = await api.export_library_zip([...librarySelection]);
+    } catch (error) {
+      showActionFailure(error);
+      return;
+    }
     if (!result.ok) {
       setViewStatus('library-status', result.error || 'Export fehlgeschlagen.', true);
       return;
@@ -1572,7 +2024,13 @@
   $('save-mail-password').addEventListener('click', async () => {
     const sender = $('mail-from').value.trim();
     const password = $('mail-password').value;
-    const result = await api.save_mail_password(sender, password);
+    let result;
+    try {
+      result = await api.save_mail_password(sender, password);
+    } catch (error) {
+      showActionFailure(error);
+      return;
+    }
     if (!result.ok) {
       setViewStatus('library-status', result.error || 'Passwort konnte nicht gespeichert werden.', true);
       return;
@@ -1599,26 +2057,47 @@
         return;
       }
       setViewStatus('library-status', `${result.file_count} Dateien an ${result.recipient} gesendet (Zip: ${result.zip_path}).`);
+    } catch (error) {
+      showActionFailure(error);
     } finally {
       button.disabled = librarySelection.size === 0;
     }
   });
   $('scan-library').addEventListener('click', async () => {
+    const scanButton = $('scan-library');
+    scanButton.disabled = true;
     setViewStatus('library-status', 'Bibliothek wird gescannt …');
-    const result = await api.scan_library();
-    if (!result.ok) {
-      setViewStatus('library-status', result.error || 'Scan fehlgeschlagen.', true);
-      return;
+    try {
+      const result = await api.scan_library();
+      if (!result.ok) {
+        setViewStatus('library-status', result.error || 'Scan fehlgeschlagen.', true);
+        return;
+      }
+      renderLibraryItems(result.items || []);
+      $('library-summary').textContent = `${result.scanned} Einträge untersucht · ${result.warning_count} Warnungen${result.truncated ? ' · Ergebnis begrenzt' : ''}`;
+      setViewStatus('library-status', `${(result.items || []).length} Aufnahmen gefunden.`);
+    } catch (error) {
+      showActionFailure(error);
+    } finally {
+      scanButton.disabled = false;
     }
-    renderLibraryItems(result.items || []);
-    $('library-summary').textContent = `${result.scanned} Einträge untersucht · ${result.warning_count} Warnungen${result.truncated ? ' · Ergebnis begrenzt' : ''}`;
-    setViewStatus('library-status', `${(result.items || []).length} Aufnahmen gefunden.`);
   });
   $('start-batch').addEventListener('click', async () => {
+    activeBatchId = '__starting__';
     $('batch-log').textContent = '';
+    $('batch-log-capped').hidden = true;
     setBatchProgress(0, 'Batch wird gestartet …');
-    const result = await api.start_batch(formSettings());
+    flushSettings();
+    let result;
+    try {
+      result = await api.start_batch(formSettings());
+    } catch (error) {
+      activeBatchId = null;
+      showActionFailure(error);
+      return;
+    }
     if (!result.ok) {
+      activeBatchId = null;
       const message = (result.errors || [result.busy ? 'Es läuft bereits ein Job.' : result.error]).join(' ');
       setViewStatus('batch-status', message, true);
       return;
@@ -1629,21 +2108,36 @@
     setViewStatus('batch-status', 'Batch läuft. Beim Verlassen dieser Ansicht läuft er weiter.');
   });
   $('cancel-batch').addEventListener('click', async () => {
-    const result = await api.cancel_batch(activeBatchId);
+    let result;
+    try {
+      result = await api.cancel_batch(activeBatchId);
+    } catch (error) {
+      showActionFailure(error);
+      return;
+    }
     setViewStatus('batch-status', result.ok ? 'Abbruch angefordert; der aktuelle Eintrag wird beendet.' : result.error, !result.ok);
   });
   window.addEventListener('beforeunload', (event) => {
-    if (!activeBatchId) return;
+    flushSettings();
+    if (!activeBatchId && $('start').disabled !== true) return;
     event.preventDefault();
-    event.returnValue = 'Der Batch läuft noch.';
+    event.returnValue = activeBatchId ? 'Der Batch läuft noch.' : 'Die Transkription läuft noch.';
   });
   window.addEventListener('pywebviewready', async () => {
     window.pywebview.api = makeApi();
     api = window.pywebview.api;
+    themeToggledSinceReady = false;
     try {
       const initial = await api.initial_state();
       if (initial.ok) {
-        if (initial.theme) {
+        if (pendingTheme) {
+          // Frischeste Nutzerwahl aus der Zeit vor dem Handshake gewinnt und
+          // wird jetzt nachträglich in der Config persistiert.
+          api.set_theme(pendingTheme).catch(showActionFailure);
+          pendingTheme = null;
+        } else if (!themeToggledSinceReady && initial.theme && initial.theme !== currentTheme) {
+          // Backend-Initialisierung ist die Autorität für das Theme — aber
+          // nur, wenn der Nutzer seit Ready nicht selbst frischer getoggelt hat.
           currentTheme = initial.theme;
           applyTheme(currentTheme);
           try { localStorage.setItem('bort-theme', currentTheme); } catch (_) { /* egal */ }

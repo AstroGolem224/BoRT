@@ -22,6 +22,27 @@ class TranscriptionError(Exception):
     pass
 
 
+# Live-Ausgabeformat von whisper-cli (stdout): fertig transkribierte Segmente
+# erscheinen sofort als "[HH:MM:SS.mmm --> HH:MM:SS.mmm]  Text"-Zeile.
+SEGMENT_LINE_RE = re.compile(
+    r"^\[(\d{1,2}):(\d{2}):(\d{2})\.(\d{3}) --> (\d{1,2}):(\d{2}):(\d{2})\.(\d{3})\]\s*(.*)$"
+)
+
+
+def parse_segment_line(line: str) -> Segment | None:
+    """Parst eine whisper-cli-stdout-Zeile in ein Segment (live-Teilergebnis)."""
+    match = SEGMENT_LINE_RE.match(line.strip())
+    if not match:
+        return None
+    h0, m0, s0, ms0, h1, m1, s1, ms1, text = match.groups()
+    text = text.strip()
+    if not text:
+        return None
+    start = int(h0) * 3600 + int(m0) * 60 + int(s0) + int(ms0) / 1000.0
+    end = int(h1) * 3600 + int(m1) * 60 + int(s1) + int(ms1) / 1000.0
+    return Segment(start=start, end=end, text=text)
+
+
 @dataclass(frozen=True)
 class TranscriptionResult:
     """Ergebnis einer Transkription."""
@@ -71,11 +92,14 @@ def _run_whisper(
     cli_path: Path | None,
     task: str = "transcribe",
     progress_cb: Callable[[float, str], None] | None = None,
+    segment_cb: Callable[[Segment], None] | None = None,
 ) -> dict:
     """Führt whisper-cli aus und gibt das geparste JSON zurück.
 
     Args:
         progress_cb: Optionaler Callback (percent, phase) für Fortschritt.
+        segment_cb: Optionaler Callback je live fertig transkribiertem
+            Segment (stdout); parallel zur finalen JSON-Ausgabe.
     """
     binary = cli_path or _find_whisper_cli()
 
@@ -134,10 +158,19 @@ def _run_whisper(
                 env["LD_LIBRARY_PATH"] = (
                     f"{library_path}{os.pathsep}{existing}" if existing else library_path
                 )
+
+            def _on_stdout_line(line: str) -> None:
+                if segment_cb is None:
+                    return
+                segment = parse_segment_line(line)
+                if segment is not None:
+                    segment_cb(segment)
+
             stdout_data, stderr_data = run_stream_progress(
                 cmd,
                 on_line=_on_line,
                 env=env,
+                on_stdout_line=_on_stdout_line,
             )
         except RuntimeError as exc:
             raise TranscriptionError(str(exc)) from exc
@@ -179,6 +212,7 @@ def transcribe(
     cli_path: Path | None = None,
     task: str = "transcribe",
     progress_cb: Callable[[float, str], None] | None = None,
+    segment_cb: Callable[[Segment], None] | None = None,
 ) -> TranscriptionResult:
     """Transkribiert eine WAV-Datei mit whisper.cpp.
 
@@ -189,6 +223,7 @@ def transcribe(
         cli_path: Optionales whisper-cli Binary (sonst automatisch finden).
         task: 'transcribe' für Originalsprache, 'translate' für Übersetzung nach Englisch.
         progress_cb: Optionaler Callback (percent, phase) für Fortschritt.
+        segment_cb: Optionaler Callback für live fertig transkribierte Segmente.
 
     Returns:
         TranscriptionResult mit Segmenten, Sprache und Rohtext.
@@ -196,7 +231,13 @@ def transcribe(
     if task not in {"transcribe", "translate"}:
         raise ValueError(f"Ungültiger task: {task}. Erlaubt: transcribe, translate")
     data = _run_whisper(
-        wav_path, model_path, language, cli_path, task=task, progress_cb=progress_cb
+        wav_path,
+        model_path,
+        language,
+        cli_path,
+        task=task,
+        progress_cb=progress_cb,
+        segment_cb=segment_cb,
     )
     segments = _parse_segments(data)
     language = data.get("params", {}).get("language") or data.get("result", {}).get("language")

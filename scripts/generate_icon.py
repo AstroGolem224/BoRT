@@ -8,6 +8,7 @@ Style: black background, coral-red accent (~#F97455), audio waveform icon.
 Produces assets/icon.png (1024x1024) and assets/icon-256.png.
 """
 from pathlib import Path
+
 from PIL import Image, ImageDraw, ImageFilter
 
 OUT_DIR = Path("/home/itiger013/Dokumente/Github/BoRT/assets")

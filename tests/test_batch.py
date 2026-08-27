@@ -138,3 +138,34 @@ def test_is_file_stable_false_when_size_changes_between_samples(tmp_path: Path) 
             path.write_bytes(b"12345678")
 
     assert is_file_stable(path, interval=0.0, sleep_fn=fake_sleep) is False
+
+
+def test_scan_pending_reads_output_listing_once_for_all_audios(
+    tmp_path: Path, monkeypatch
+) -> None:
+    watch_dir, output_dir = tmp_path / "watch", tmp_path / "output"
+    watch_dir.mkdir()
+    output_dir.mkdir()
+    for index in range(3):
+        (watch_dir / f"session{index}.m4a").write_bytes(b"")
+    (output_dir / "2026-08-27").mkdir()
+    (output_dir / "2026-08-27" / "session1.txt").write_text("fertig", encoding="utf-8")
+    settings = {"formats": ["txt"], "backend": "whispercpp", "colocate": False}
+
+    rglob_calls = {"n": 0}
+    real_rglob = Path.rglob
+
+    def counting_rglob(self: Path, pattern: str):
+        rglob_calls["n"] += 1
+        return real_rglob(self, pattern)
+
+    monkeypatch.setattr(Path, "rglob", counting_rglob)
+    items = scan_pending(watch_dir, output_dir, settings)
+
+    # session1 hat Output, die anderen beiden nicht; das output_dir-Listing
+    # wird trotz drei Audios nur einmal geholt statt dreimal per rglob.
+    assert [item.audio_path.name for item in items] == [
+        "session0.m4a",
+        "session2.m4a",
+    ]
+    assert rglob_calls["n"] == 1

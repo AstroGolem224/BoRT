@@ -4,23 +4,22 @@ from __future__ import annotations
 
 import heapq
 import json
+import logging
 import os
+import shutil
 import subprocess
 import sys
 import threading
 import uuid
 import zipfile
 from collections import OrderedDict, deque
-from concurrent.futures import Future
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime
 from importlib import resources
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import gi
-import webview
-
-from .audio import is_supported_audio
+from .audio import SUPPORTED_AUDIO_EXTS, is_supported_audio
 from .config import Config
 from .controller.batch import BatchController
 from .controller.jobs import (
@@ -40,19 +39,58 @@ from .mailer import MailError, is_valid_address, load_app_password, send_zip, st
 from .sidecar import read_recording_meta, resample_peaks
 from .speaker_review import ReviewError, load_review
 from .speakers import SpeakerSegment
+from .streaming import cancel_all_streams, terminate_registered_processes
 from .voice_profiles import VoiceCatalog, VoiceCatalogError
 from .waveform import WaveformError, extract_peaks, terminate_process
 from .writers import FORMATS, recover_transactions
 
+if TYPE_CHECKING:
+    import webview
+
 
 def _load_glib() -> Any:
-    gi.require_version("GLib", "2.0")
-    from gi.repository import GLib
+    """Lädt GLib erst beim ersten Gebrauch (lazy).
 
-    return GLib
+    ``import bort.app`` und damit auch Tests/CLI laufen ohne installiertes
+    GTK; geladen wird GLib nur, wenn die GUI wirklich läuft.
+    """
+    global _glib
+    if _glib is None:
+        import gi
+
+        gi.require_version("GLib", "2.0")
+        from gi.repository import GLib
+
+        _glib = GLib
+    return _glib
 
 
-GLib = _load_glib()
+def _load_webview() -> Any:
+    """Lädt pywebview erst beim ersten Gebrauch (lazy, wie _load_glib)."""
+    import webview
+
+    return webview
+
+
+_glib: Any | None = None
+
+
+logger = logging.getLogger(__name__)
+
+
+def open_path_in_file_manager(path: Path) -> bool:
+    """Öffnet einen Ordner im Dateimanager der aktuellen Plattform."""
+    openers = {"linux": "xdg-open", "darwin": "open", "win32": "explorer"}
+    opener = openers.get(sys.platform)
+    if opener is None or shutil.which(opener) is None:
+        logger.warning("Kein Dateimanager-Öffner verfügbar (Plattform=%s).", sys.platform)
+        return False
+    try:
+        subprocess.Popen([opener, str(path)])
+    except OSError as exc:
+        logger.warning("Dateimanager konnte nicht geöffnet werden: %s", exc)
+        return False
+    return True
 
 # WICHTIG: pywebviews parse_file_type erlaubt in der Beschreibung nur [\w ]+
 # (Wortzeichen + Leerzeichen). Bindestriche brechen es -> ValueError beim
@@ -63,7 +101,13 @@ REVIEW_FILTER = "Review Dateien (*.review.json)"
 GGML_FILTER = "GGML Modelle (*.bin;*.gguf)"
 ALL_FILES_FILTER = "Alle Dateien (*.*)"
 MAX_QUEUED_LOGS = 300
-MAX_WAVEFORM_CACHE = 4
+# 24 statt 4: Typische Bibliotheksnutzung blättert durch dutzende Aufnahmen
+# (Peak-Extraktion kostet je einen ffmpeg-Subprocess); als LRU behält der
+# Cache die zuletzt angesehenen Wellenformen, ohne dass erneut extrahiert wird.
+MAX_WAVEFORM_CACHE = 24
+# Deckel für den Sidecar-Parse-Cache: geänderte/gelöschte Dateien hinterlassen
+# sonst bei jedem Rescan eine tote Kopie samt peaks34.
+MAX_LIBRARY_SCAN_CACHE = 500
 
 
 def _representative_segment(
@@ -112,11 +156,18 @@ class Bridge:
         self._window_loaded = False
         self._closed = False
         self._active_job_id: str | None = None
+        self._active_job_abort: threading.Event | None = None
         self._active_batch_id: str | None = None
         self._pending_batch: list[Any] = []
         self._pending_batch_fingerprint: tuple[Any, ...] | None = None
         self._library_generation = 0
         self._library_items: dict[str, tuple[int, Path]] = {}
+        # Per-Datei-Cache für scan_library: Schlüssel (Pfad, Größe, mtime) der
+        # Audio-Datei plus (Größe, mtime) des Sidecars, gültig gegen frisches
+        # stat() beider Dateien.
+        self._library_scan_cache: OrderedDict[
+            tuple[Path, int, float, int, float], tuple[float, int, dict[str, Any]]
+        ] = OrderedDict()
         self._player: AudioPlayer | None = None
         self._window_size: tuple[int, int] | None = None
         self._waveform_processes: dict[
@@ -167,10 +218,17 @@ class Bridge:
             self._window_size = size
 
     def on_window_closed(self, *_args: Any) -> None:
-        """Verwirft wartende Ereignisse, sobald das Fenster geschlossen ist."""
+        """Bricht laufende Jobs ab und verwirft wartende Ereignisse."""
         with self._state_lock:
             self._closed = True
             window_size = self._window_size
+            active_batch_id = self._active_batch_id
+        # Erst das Batch-Abbruchflag setzen, dann die aktiven Subprozesse
+        # (whisper-cli/whisperX/ffmpeg) über ihre Prozessgruppe beenden –
+        # so startet der Batch-Worker kein weiteres Item mehr.
+        if active_batch_id is not None:
+            self.batch_controller.cancel(active_batch_id)
+        cancel_all_streams()
         if window_size is not None:
             def save_size() -> None:
                 self.config.set("last_window_width", window_size[0])
@@ -335,13 +393,15 @@ class Bridge:
         return self._pick_file("model", "GGML-Modell auswählen", (GGML_FILTER, ALL_FILES_FILTER))
 
     def pick_output(self) -> dict[str, Any]:
-        result = self._dialog(webview.FOLDER_DIALOG, "Ausgabeordner auswählen", (), "output")
+        result = self._dialog(
+            _load_webview().FOLDER_DIALOG, "Ausgabeordner auswählen", (), "output"
+        )
         return self._record_path("output", result, must_be_directory=True)
 
     def pick_review_file(self) -> dict[str, Any]:
         """Lädt eine Review hinter einer opaken ID, ohne ihren Pfad an JS zu geben."""
         chosen = self._dialog(
-            webview.OPEN_DIALOG,
+            _load_webview().OPEN_DIALOG,
             "Review-Datei auswählen",
             (REVIEW_FILTER, ALL_FILES_FILTER),
             "review",
@@ -532,7 +592,7 @@ class Bridge:
         duration, peaks = result
         return {"ok": True, "duration": duration, "peaks": peaks}
 
-    ALLOWED_FORMATS = ("txt", "md", "csv", "tsv")
+    ALLOWED_FORMATS = ("txt", "md", "csv", "tsv", "srt", "vtt")
 
     def save_output_options(self, options: Any) -> dict[str, Any]:
         """Persistiert die globalen Transkriptionsoptionen sofort bei Auswahl."""
@@ -619,10 +679,8 @@ class Bridge:
             )
         if output is None or not output.is_dir():
             return {"ok": False, "error": "Kein gültiger Ausgabeordner ausgewählt."}
-        try:
-            subprocess.Popen(["xdg-open", str(output)])
-        except OSError as exc:
-            return {"ok": False, "error": str(exc)}
+        if not open_path_in_file_manager(output):
+            return {"ok": False, "error": "Ordner konnte nicht geöffnet werden."}
         return {"ok": True}
 
     def play_segment(self, review_id: Any, speaker_id: Any) -> dict[str, Any]:
@@ -692,7 +750,7 @@ class Bridge:
         }
 
     def pick_watch_dir(self) -> dict[str, Any]:
-        chosen = self._dialog(webview.FOLDER_DIALOG, "Sync-Ordner auswählen", (), "watch")
+        chosen = self._dialog(_load_webview().FOLDER_DIALOG, "Sync-Ordner auswählen", (), "watch")
         result = self._record_path("watch", chosen, must_be_directory=True)
         if result.get("ok"):
             path = Path(result["path"])
@@ -702,9 +760,46 @@ class Bridge:
             )
         return result
 
+    def set_dropped_path(self, kind: str, path: str) -> dict[str, Any]:
+        """Registriert einen per Drag && Drop abgelegten Pfad.
+
+        WebKitGTK liefert bei Drops keine usable File-API-Pfade; das Frontend
+        parst ``text/uri-list`` und reicht das Ergebnis hier nach (gleiche
+        Registrierung wie der Dateidialog, damit Start/Batch dieselben Pfade
+        verwenden).
+        """
+        keys = {"audio": "audio", "marker": "marker", "watch": "watch"}
+        key = keys.get(kind)
+        if not key or not path:
+            return {"ok": False, "error": "Ungültiges Drop-Ziel."}
+        candidate = Path(path)
+        if kind == "audio":
+            # Backend als Quelle der Wahrheit (SUPPORTED_AUDIO_EXTS aus
+            # audio.py): das Frontend dupliziert die Liste nicht mehr.
+            if candidate.suffix.lower() not in SUPPORTED_AUDIO_EXTS:
+                return {
+                    "ok": False,
+                    "error": (
+                        f"Nicht unterstütztes Audio-Format: {candidate.name}. "
+                        f"Unterstützt: {', '.join(sorted(SUPPORTED_AUDIO_EXTS))}"
+                    ),
+                }
+        if kind == "watch":
+            # Aussagekräftiger als die generische Dialog-Meldung, weil Drops
+            # ohne Datei-Suffix nicht clientseitig unterscheidbar sind.
+            if not candidate.is_dir():
+                return {"ok": False, "error": "Der Sync-Ordner muss ein Ordner sein."}
+        result = self._record_path(key, path, must_be_directory=(kind == "watch"))
+        if result.get("ok") and kind == "watch":
+            self.controller.update_config(
+                self.config,
+                lambda: self._save_config_path("last_watch_dir", Path(result["path"])),
+            )
+        return result
+
     def pick_library_dir(self) -> dict[str, Any]:
         chosen = self._dialog(
-            webview.FOLDER_DIALOG, "Bibliotheksordner auswählen", (), "library"
+            _load_webview().FOLDER_DIALOG, "Bibliotheksordner auswählen", (), "library"
         )
         result = self._record_path("library", chosen, must_be_directory=True)
         if result.get("ok"):
@@ -712,6 +807,7 @@ class Bridge:
             with self._state_lock:
                 self._library_generation += 1
                 self._library_items = {}
+                self._library_scan_cache = OrderedDict()
             self.controller.update_config(
                 self.config,
                 lambda: self._save_config_path("last_library_dir", path),
@@ -729,6 +825,69 @@ class Bridge:
         except (OSError, OverflowError, ValueError):
             return fallback
 
+    def _scan_library_file(self, audio: Path) -> tuple[float, int, dict[str, Any]] | None:
+        """Liest Sidecar-/Format-/Review-Status einer Audio-Datei.
+
+        Gecacht wird nur das Sidecar-PARSING, pro (Pfad, Größe, mtime):
+        unveränderte Dateien überspringen beim nächsten Scan den JSON-Parse.
+        formats_present/has_review sind billige is_file-Checks und werden
+        immer frisch geprüft, damit neu erzeugte oder gelöschte .md- und
+        .review.json-Dateien sofort erscheinen bzw. verschwinden.
+        """
+        try:
+            stat = audio.stat()
+        except OSError:
+            return None
+        sidecar = audio.with_name(f"{audio.stem}.json")
+        try:
+            side_stat = sidecar.stat()
+            side_key = (side_stat.st_size, side_stat.st_mtime)
+        except OSError:
+            side_key = (-1, -1.0)
+        # Der Sidecar gehört in den Schlüssel: trifft in einem Sync-Ordner das
+        # Audio vor der .json ein, ändert das nachgereichte Sidecar den
+        # Audio-stat nicht und der Eintrag bliebe für immer auf 00:00 stehen.
+        cache_key = (audio, stat.st_size, stat.st_mtime, *side_key)
+        cached = self._library_scan_cache.get(cache_key)
+        if cached is None:
+            meta = read_recording_meta(sidecar, audio.name)
+            if meta:
+                warnings = len(meta.warnings)
+            elif sidecar.exists():
+                warnings = 1
+            else:
+                warnings = 0
+            epoch = self._library_epoch(meta.started_at if meta else None, stat.st_mtime)
+            item = {
+                "name": audio.name,
+                "folder": str(audio.parent),
+                "duration_ms": meta.duration_ms if meta else 0,
+                "started_at": meta.started_at.isoformat() if meta and meta.started_at else None,
+                "marker_count": meta.marker_count if meta else 0,
+                "peaks34": resample_peaks(meta.peaks, 34) if meta else [],
+                # file://-URI direkt mitliefern: play() muss synchron in der
+                # Klick-Geste laufen (WebKitGTK-Autoplay-Policy), ein
+                # Bridge-Roundtrip dazwischen würde die Geste verlieren.
+                "audio_url": audio.as_uri(),
+            }
+            cached = (epoch, warnings, item)
+            self._library_scan_cache[cache_key] = cached
+            while len(self._library_scan_cache) > MAX_LIBRARY_SCAN_CACHE:
+                self._library_scan_cache.popitem(last=False)
+        else:
+            self._library_scan_cache.move_to_end(cache_key)
+        epoch, warnings, item = cached
+        formats = [
+            fmt for fmt, (suffix, _writer) in FORMATS.items()
+            if audio.with_name(audio.stem + suffix).is_file()
+        ]
+        fresh = {
+            **item,
+            "formats_present": formats,
+            "has_review": audio.with_name(f"{audio.stem}.review.json").is_file(),
+        }
+        return (epoch, warnings, fresh)
+
     def scan_library(self) -> dict[str, Any]:
         with self._state_lock:
             root = self._paths["library"]
@@ -738,6 +897,7 @@ class Bridge:
         truncated = False
         warning_count = 0
         candidates: list[tuple[tuple[float, str], dict[str, Any], Path]] = []
+        audios: list[Path] = []
         directories: list[tuple[Path, list[Path] | None]] = []
         try:
             root_entries: list[Path] = []
@@ -767,35 +927,21 @@ class Bridge:
                         break
                 if not audio.is_file() or not is_supported_audio(audio):
                     continue
-                sidecar = audio.with_name(f"{audio.stem}.json")
-                meta = read_recording_meta(sidecar, audio.name)
-                if meta:
-                    warning_count += len(meta.warnings)
-                elif sidecar.exists():
-                    warning_count += 1
-                formats = [
-                    fmt for fmt, (suffix, _writer) in FORMATS.items()
-                    if audio.with_name(audio.stem + suffix).is_file()
-                ]
-                stat = audio.stat()
-                epoch = self._library_epoch(meta.started_at if meta else None, stat.st_mtime)
-                item = {
-                    "name": audio.name,
-                    "folder": str(audio.parent),
-                    "duration_ms": meta.duration_ms if meta else 0,
-                    "started_at": meta.started_at.isoformat() if meta and meta.started_at else None,
-                    "marker_count": meta.marker_count if meta else 0,
-                    "peaks34": resample_peaks(meta.peaks, 34) if meta else [],
-                    "formats_present": formats,
-                    "has_review": audio.with_name(f"{audio.stem}.review.json").is_file(),
-                    # file://-URI direkt mitliefern: play() muss synchron in der
-                    # Klick-Geste laufen (WebKitGTK-Autoplay-Policy), ein
-                    # Bridge-Roundtrip dazwischen würde die Geste verlieren.
-                    "audio_url": audio.as_uri(),
-                }
-                candidates.append(((epoch, audio.name), item, audio.resolve()))
+                audios.append(audio)
             if truncated:
                 break
+        # Sidecar-JSON-Parses und stat()-Aufrufe dominieren die Scan-Zeit und
+        # laufen deshalb parallel; executor.map hält die Kandidatenreihenfolge
+        # stabil, das Ergebnis bleibt wie beim seriellen Lauf.
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            for audio, result in zip(
+                audios, executor.map(self._scan_library_file, audios)
+            ):
+                if result is None:
+                    continue
+                epoch, warnings, item = result
+                warning_count += warnings
+                candidates.append(((epoch, audio.name), item, audio.resolve()))
         newest = heapq.nlargest(500, candidates, key=lambda row: row[0])
         if len(candidates) > 500:
             truncated = True
@@ -804,8 +950,9 @@ class Bridge:
         response_items = []
         for index, (_key, item, audio) in enumerate(newest):
             item_id = uuid.uuid4().hex
-            item["item_id"] = item_id
-            response_items.append(item)
+            # item_id in einen frischen Dict mergen: das gecachte item-Template
+            # bleibt unverändert wiederverwendbar.
+            response_items.append({**item, "item_id": item_id})
             mapping[item_id] = (self._library_generation + 1, audio)
         with self._state_lock:
             self._library_generation += 1
@@ -867,7 +1014,9 @@ class Bridge:
         }
 
     def pick_export_dir(self) -> dict[str, Any]:
-        chosen = self._dialog(webview.FOLDER_DIALOG, "Export-Ordner auswählen", (), "export")
+        chosen = self._dialog(
+            _load_webview().FOLDER_DIALOG, "Export-Ordner auswählen", (), "export"
+        )
         result = self._record_path("export", chosen, must_be_directory=True)
         if result.get("ok"):
             path = Path(result["path"])
@@ -883,10 +1032,8 @@ class Bridge:
             export_dir = self._paths.get("export")
         if export_dir is None or not export_dir.is_dir():
             return {"ok": False, "error": "Kein gültiger Export-Ordner ausgewählt."}
-        try:
-            subprocess.Popen(["xdg-open", str(export_dir)])
-        except OSError as exc:
-            return {"ok": False, "error": str(exc)}
+        if not open_path_in_file_manager(export_dir):
+            return {"ok": False, "error": "Ordner konnte nicht geöffnet werden."}
         return {"ok": True}
 
     def export_library_zip(self, item_ids: Any) -> dict[str, Any]:
@@ -950,7 +1097,13 @@ class Bridge:
             new_audio = rename_recording_family(audio, new_base)
         except SpeakerEditError as exc:
             return {"ok": False, "error": str(exc)}
-        return {"ok": True, "name": new_audio.name}
+        # Interne Zuordnung item_id -> Pfade nachziehen, damit Folgeaktionen
+        # (open_library_review, prepare_library_transcription) ohne Rescan gehen.
+        with self._state_lock:
+            registered = self._library_items.get(item_id)
+            if registered is not None:
+                self._library_items[item_id] = (registered[0], new_audio)
+        return {"ok": True, "name": new_audio.name, "audio_url": new_audio.as_uri()}
 
     def get_mail_state(self) -> dict[str, Any]:
         """Liefert gemerkte Mail-Adressen und ob ein App-Passwort hinterlegt ist."""
@@ -1098,6 +1251,23 @@ class Bridge:
         cancelled = self.batch_controller.cancel(batch_id)
         return {"ok": cancelled, "error": None if cancelled else "Unbekannte Batch-ID."}
 
+    def cancel_transcription(self) -> dict[str, Any]:
+        """Bricht den laufenden Einzeljob ab (Abort-Event + Subprozess-Kill).
+
+        Das Job-Lock gibt der Worker-Thread im finally selbst frei
+        (Owner-Check, Runde-1-Adoption); hier wird der Besitz nicht
+        angetastet.
+        """
+        with self._state_lock:
+            abort_event = self._active_job_abort if self._active_job_id else None
+            if abort_event is None:
+                return {"ok": False, "error": "Keine laufende Transkription."}
+            abort_event.set()
+        # Aktive whisper-cli-/ffmpeg-Prozesse des Jobs beenden; künftige Starts
+        # bleiben erlaubt (anders als beim Fensterschluss).
+        terminate_registered_processes()
+        return {"ok": True}
+
     def start_transcription(self, raw_settings: Any) -> dict[str, Any]:
         """Validiert UI-Werte und startet genau einen Controller-Worker."""
         if not isinstance(raw_settings, dict):
@@ -1114,26 +1284,38 @@ class Bridge:
         if not acquired.acquired:
             return {"ok": False, "error": acquired.error or "busy"}
         job_id = str(uuid.uuid4())
+        abort_event = threading.Event()
         with self._state_lock:
             if self._closed:
                 self.controller.release()
                 return {"ok": False, "error": "Fenster wurde geschlossen."}
             self._active_job_id = job_id
+            self._active_job_abort = abort_event
             self._events.clear()
             self._latest_progress = None
             self._queued_logs = 0
         self._save_settings(result.params)
         worker = threading.Thread(
             target=self._run_worker,
-            args=(job_id, result.params),
+            args=(job_id, result.params, abort_event),
             daemon=True,
             name=f"bort-transcription-{job_id}",
         )
         worker.start()
         return {"ok": True, "job_id": job_id}
 
-    def _run_worker(self, job_id: str, params: Any) -> None:
-        transcription_worker(params, lambda event: self._enqueue_worker_event(job_id, event))
+    def _run_worker(self, job_id: str, params: Any, abort_event: threading.Event) -> None:
+        # Der Worker-Thread übernimmt den im API-Thread erworbenen Job-Lock
+        # und gibt ihn im finally sicher wieder frei (Owner-Check).
+        self.controller.adopt()
+        try:
+            transcription_worker(
+                params,
+                lambda event: self._enqueue_worker_event(job_id, event),
+                abort_event=abort_event,
+            )
+        finally:
+            self.controller.release()
 
     def _enqueue_worker_event(self, job_id: str, event: tuple[Any, ...]) -> None:
         payload = self._event_payload(event)
@@ -1195,7 +1377,7 @@ class Bridge:
             ):
                 return
             self._drain_scheduled = True
-        GLib.idle_add(self._drain_events)
+        _load_glib().idle_add(self._drain_events)
 
     def _drain_events(self) -> bool:
         """Läuft ausschließlich im GTK-Mainloop und übergibt JSON an den festen Dispatcher."""
@@ -1231,13 +1413,17 @@ class Bridge:
                 payload_json = json.dumps(payload, ensure_ascii=False)
                 self.window.run_js(f"window.__bortDispatch({json.dumps(payload_json)});")
             except Exception:
-                self.on_window_closed()
+                # Nur diesen Versand abbrechen: on_window_closed() würde den
+                # Einweg-Latch in cancel_all_streams() setzen und damit nach
+                # einem transienten run_js-Fehler jeden weiteren Start
+                # blockieren. Der echte Fensterschluss kommt vom closed-Event.
+                logger.warning("Ereignis-Versand an die UI fehlgeschlagen.", exc_info=True)
                 break
-            if payload["type"] in {"done", "error"}:
+            if payload["type"] in {"done", "error", "cancelled"}:
                 with self._state_lock:
                     if self._active_job_id == job_id:
                         self._active_job_id = None
-                        self.controller.release()
+                        self._active_job_abort = None
             elif payload["type"] == "batch_finished":
                 with self._state_lock:
                     if self._active_batch_id == job_id:
@@ -1248,7 +1434,7 @@ class Bridge:
         self._schedule_drain()
 
     def _pick_file(self, key: str, title: str, filters: tuple[str, ...]) -> dict[str, Any]:
-        result = self._dialog(webview.OPEN_DIALOG, title, filters, key)
+        result = self._dialog(_load_webview().OPEN_DIALOG, title, filters, key)
         return self._record_path(key, result)
 
     def _dialog(
@@ -1314,7 +1500,7 @@ class Bridge:
         if task not in {"transcribe", "translate"}:
             return "Unbekannte Aufgabe."
         if not isinstance(formats, list) or any(
-            item not in {"txt", "md", "csv", "tsv"} for item in formats
+            item not in {"txt", "md", "csv", "tsv", "srt", "vtt"} for item in formats
         ):
             return "Ungültige Ausgabeformate."
         colocate = raw.get("colocate") is True
@@ -1422,6 +1608,16 @@ class Bridge:
             return {"type": "log", "level": event[1], "message": event[2]}
         if event_type == "error":
             return {"type": "error", "message": event[1]}
+        if event_type == "cancelled":
+            return {"type": "cancelled", "message": event[1]}
+        if event_type == "partial":
+            data = event[1]
+            return {
+                "type": "partial",
+                "start": float(data["start"]),
+                "end": float(data["end"]),
+                "text": str(data["text"]),
+            }
         if event_type == "done":
             data = event[2]
             segments = [
@@ -1511,8 +1707,10 @@ def main() -> None:
     # Taskbar/Fensterwechsler. sys.argv[0] MUSS mit gesetzt werden, weil
     # Gtk.init (in webview.start) den prgname sonst wieder aus argv[0] ableitet.
     sys.argv[0] = "bort"
-    GLib.set_prgname("bort")
-    GLib.set_application_name("BoR Transcriber")
+    glib = _load_glib()
+    webview = _load_webview()
+    glib.set_prgname("bort")
+    glib.set_application_name("BoR Transcriber")
     bridge = Bridge()
     index = resources.files("bort").joinpath("web", "index.html")
     with resources.as_file(index) as index_path:

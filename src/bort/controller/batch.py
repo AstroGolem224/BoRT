@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
-import queue
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
 from ..batch import PendingItem, _has_output, is_file_stable, scan_pending
 from ..markers import MarkerError, load_markers
+from ..streaming import terminate_registered_processes
 from .jobs import EventEmitter, JobController, TranscriptionParams, transcription_worker
 
 
@@ -30,12 +31,22 @@ class BatchController:
         self._lock = threading.Lock()
         self._active_id: str | None = None
         self._cancel_requested = False
+        self._abort = threading.Event()
 
     def scan(
         self, watch_dir: Path, output_dir: Path, settings: dict | None = None
     ) -> tuple[list[PendingItem], int]:
         candidates = scan_pending(watch_dir, output_dir, settings)
-        stable = [item for item in candidates if is_file_stable(item.audio_path)]
+        if not candidates:
+            return [], 0
+        # is_file_stable wartet 2 s pro Datei; die Stichproben laufen deshalb
+        # parallel. executor.map erhält die Kandidatenreihenfolge, das
+        # Ergebnis ist damit identisch zum seriellen Lauf.
+        with ThreadPoolExecutor(max_workers=min(8, len(candidates))) as executor:
+            flags = list(
+                executor.map(lambda item: is_file_stable(item.audio_path), candidates)
+            )
+        stable = [item for item, is_stable in zip(candidates, flags) if is_stable]
         return stable, len(candidates) - len(stable)
 
     def start(self, built: list[tuple[PendingItem, TranscriptionParams | None]]) -> str | None:
@@ -49,6 +60,7 @@ class BatchController:
             batch_id = uuid4().hex
             self._active_id = batch_id
             self._cancel_requested = False
+            self._abort = threading.Event()
         threading.Thread(target=self._run, args=(batch_id, built), daemon=True).start()
         return batch_id
 
@@ -57,7 +69,11 @@ class BatchController:
             if batch_id != self._active_id:
                 return False
             self._cancel_requested = True
-            return True
+            self._abort.set()
+        # Das Flag greift erst zwischen zwei Items; ohne Prozess-Kill liefe
+        # eine 90-min-Datei nach dem Klick noch eine halbe Stunde weiter.
+        terminate_registered_processes()
+        return True
 
     def _cancelled(self, batch_id: str) -> bool:
         with self._lock:
@@ -66,6 +82,8 @@ class BatchController:
     def _run(
         self, batch_id: str, built: list[tuple[PendingItem, TranscriptionParams | None]]
     ) -> None:
+        # Der Worker-Thread übernimmt den im Starter-Thread erworbenen Lock.
+        self._jobs.adopt()
         succeeded = failed = skipped = 0
         try:
             total = len(built)
@@ -152,26 +170,32 @@ class BatchController:
                     )
                 )
                 return "skip"
-        events: queue.Queue[tuple] = queue.Queue()
-        transcription_worker(params, events.put)
-        ok, message = self._drain(events, batch_id, index, total)
-        self._emit(("batch_item_done", batch_id, item.audio_path.name, message))
-        return "ok" if ok else "error"
+        # Events wie beim Einzeljob live durchreichen: transcription_worker
+        # ruft den Callback synchron auf, Fortschritt erreicht die UI während
+        # des Laufs statt erst nach Item-Ende.
+        outcome: dict[str, object] = {
+            "ok": False,
+            "message": "Fehler: unbekannt",
+            "cancelled": False,
+        }
 
-    def _drain(
-        self, events: queue.Queue[tuple], batch_id: str, index: int, total: int
-    ) -> tuple[bool, str]:
-        ok, message = False, "Fehler: unbekannt"
-        while True:
-            try:
-                event = events.get_nowait()
-            except queue.Empty:
-                return ok, message
+        def forward(event: tuple) -> None:
             if event[0] == "log":
                 self._emit(("batch_item_log", batch_id, index, total, event[1], event[2]))
             elif event[0] == "progress":
                 self._emit(("batch_item_progress", batch_id, index, total, event[1], event[2]))
             elif event[0] == "done":
-                ok, message = True, "OK"
+                outcome["ok"], outcome["message"] = True, "OK"
             elif event[0] == "error":
-                message = f"Fehler: {event[1]}"
+                outcome["message"] = f"Fehler: {event[1]}"
+            elif event[0] == "cancelled":
+                # Nutzer-Abbruch ist kein Fehler: sonst zählte der Batch das
+                # abgebrochene Item als „Fehler: unbekannt“.
+                outcome["message"] = "Abgebrochen"
+                outcome["cancelled"] = True
+
+        transcription_worker(params, forward, self._abort)
+        self._emit(("batch_item_done", batch_id, item.audio_path.name, outcome["message"]))
+        if outcome["cancelled"]:
+            return "skip"
+        return "ok" if outcome["ok"] else "error"
