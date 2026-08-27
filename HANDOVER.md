@@ -114,7 +114,7 @@ uv run ruff check src/    # Lint
 ### whisper-tagger Module
 | Datei | Zweck |
 |---|---|
-| `whisperx_transcribe.py` | CLI: VAD+transcribe+align+diarize → JSON auf stdout |
+| `whisperx_transcribe.py` | CLI: VAD+transcribe+align+diarize → JSON auf stdout (Mindeststand: Commit `6981fce`, Segment-Clamp vor dem Alignment gegen CUDA-OOM) |
 | `torchaudio_shim.py` | Patch für torch.load + torchaudio 2.11 slim |
 | `run.sh` | Wrapper: LD_LIBRARY_PATH + .env laden |
 | `.env` | HF_TOKEN (chmod 600) |

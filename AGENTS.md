@@ -86,6 +86,7 @@ Im GUI-Fenster gibt es einen "Ordner öffnen"-Button, der das Ausgabeverzeichnis
 - Die `speaker_map` wird aus der Reihenfolge des ersten Auftretens der Sprecher-IDs gebildet: `SPEAKER_00 → sprecher001`, `SPEAKER_01 → sprecher002`, ...
 - Mit `--auto-markers` wird eine `<audio>.markers.json` gespeichert, die in der GUI nachträglich editiert werden kann (Speaker-Rename).
 - Benachbarte Segmente desselben Sprechers werden zu einem Marker-Intervall zusammengeführt.
+- **Mindeststand von whisper-tagger:** Commit `6981fce` ("clamp overlong segments before whisperX alignment"). Ohne diesen Commit stirbt der Subprocess bei langen Aufnahmen mit Stille am Bandende an `torch.OutOfMemoryError` im Alignment-Schritt (ein VAD-Loch dehnt das End-Timestamp eines Segments über Minuten, `whisperx.align` schneidet das Fenster am Stück). Symptom in BoRT: "Prozessfehler (Code 1)" mit CUDA-OOM-Traceback im Log. Umgehung ohne Update: `--no-diarize`.
 
 ## Tests
 
