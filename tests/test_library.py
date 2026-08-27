@@ -3,6 +3,7 @@
 import json
 import os
 import time
+from collections import OrderedDict
 from pathlib import Path
 
 import bort.app
@@ -291,3 +292,31 @@ def test_library_scan_cache_is_bounded(tmp_path: Path) -> None:
         audio.write_bytes(b"audio")
         bridge._scan_library_file(audio)
     assert len(bridge._library_scan_cache) == limit
+
+
+class _SlowGetCache(OrderedDict):
+    """Cache mit garantiertem Umschaltfenster zwischen get() und move_to_end()."""
+
+    def get(self, key, default=None):
+        value = super().get(key, default)
+        time.sleep(0.005)
+        return value
+
+
+def test_scan_library_survives_parallel_cache_eviction(tmp_path, monkeypatch) -> None:
+    """Der Scan läuft im ThreadPool: Verdrängung darf keinen Treffer wegziehen."""
+    monkeypatch.setattr(bort.app, "MAX_LIBRARY_SCAN_CACHE", 6)
+    root = tmp_path / "library"
+    root.mkdir()
+    for index in range(6):
+        (root / f"alt-{index}.m4a").write_bytes(b"audio")
+    bridge = _bridge(tmp_path, root)
+    bridge._library_scan_cache = _SlowGetCache()
+    assert bridge.scan_library()["ok"] is True
+    # Zweiter Scan: sechs Cache-Treffer laufen gegen sechs Neuzugänge, die den
+    # Cache exakt umwälzen. Ohne Sperre um get()/move_to_end() wirft ein
+    # Treffer-Thread KeyError, sobald ein anderer seinen Schlüssel im Fenster
+    # verdrängt hat.
+    for index in range(6):
+        (root / f"neu-{index}.m4a").write_bytes(b"audio")
+    assert bridge.scan_library()["ok"] is True

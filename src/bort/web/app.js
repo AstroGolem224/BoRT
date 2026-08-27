@@ -61,6 +61,15 @@
       ? { text: combined.slice(-limit), capped: true }
       : { text: combined, capped: false };
   };
+  // "0 ausstehende Dateien" hieß bisher gleichermaßen "Ordner leer", "kein
+  // Audio darin" und "alles längst transkribiert" – ein korrekter Scan sah
+  // damit kaputt aus. Die Meldung nennt jetzt die Lage.
+  const batchScanSummary = (total, pending) => {
+    if (!total) return 'Keine Audiodateien im Ordner gefunden.';
+    const files = `${total} ${total === 1 ? 'Datei' : 'Dateien'}`;
+    if (!pending) return `${files}, alle bereits transkribiert — 0 ausstehend.`;
+    return `${files}, ${pending} ausstehend.`;
+  };
   const appendCappedLog = (logId, hintId, line) => {
     const log = $(logId);
     const { text, capped } = capLogText(log.textContent, line);
@@ -1953,7 +1962,10 @@
     batchNeedsRescan = false;
     renderBatchItems(pendingBatchItems);
     $('unstable-count').textContent = `${result.skipped_unstable || 0} noch instabile Dateien übersprungen.`;
-    setViewStatus('batch-status', `${pendingBatchItems.length} ausstehende Dateien gefunden.`);
+    setViewStatus(
+      'batch-status',
+      batchScanSummary(result.total_audio || 0, pendingBatchItems.length),
+    );
   });
   $('pick-library').addEventListener('click', async () => {
     let result;

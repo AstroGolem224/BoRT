@@ -132,6 +132,7 @@ def transcription_worker(params: TranscriptionParams, log_queue: queue.Queue) ->
         log_queue.put(("progress", percent, phase))
 
     handler, previous_level = _setup_worker_logging(log_queue, params.verbose)
+    wav_path: Path | None = None
     try:
         if params.backend == "whisperx":
             # --- whisperX-Pfad (GPU + Diarization) ---
@@ -248,10 +249,6 @@ def transcription_worker(params: TranscriptionParams, log_queue: queue.Queue) ->
         for path in output_paths:
             logger.info("  - %s", path)
 
-        if params.backend != "whisperx" and not params.keep_wav:
-            logger.debug("Lösche temporäre WAV-Datei: %s", wav_path)
-            cleanup_wav(wav_path)
-
         _progress_cb(100.0, "Fertig")
         # done-Nachricht mit Ergebnisdaten für Speaker-Manager
         done_data = {
@@ -279,6 +276,11 @@ def transcription_worker(params: TranscriptionParams, log_queue: queue.Queue) ->
     except Exception as exc:
         log_queue.put(("error", f"Unerwarteter Fehler: {exc}"))
     finally:
+        # Auch auf dem Fehlerpfad: sonst bleibt je Fehllauf ein mkdtemp-Ordner
+        # mit der vollständigen 16k-WAV liegen.
+        if wav_path is not None and not params.keep_wav:
+            logger.debug("Lösche temporäre WAV-Datei: %s", wav_path)
+            cleanup_wav(wav_path)
         root = logging.getLogger()
         root.removeHandler(handler)
         root.setLevel(previous_level)

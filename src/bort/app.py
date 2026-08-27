@@ -848,7 +848,13 @@ class Bridge:
         # Audio vor der .json ein, ändert das nachgereichte Sidecar den
         # Audio-stat nicht und der Eintrag bliebe für immer auf 00:00 stehen.
         cache_key = (audio, stat.st_size, stat.st_mtime, *side_key)
-        cached = self._library_scan_cache.get(cache_key)
+        # Der Scan läuft im ThreadPool: Lesen und Schreiben des Caches gehören
+        # unter dieselbe Sperre wie beim Waveform-Cache, sonst verdrängt ein
+        # zweiter Thread den Schlüssel zwischen get() und move_to_end().
+        with self._state_lock:
+            cached = self._library_scan_cache.get(cache_key)
+            if cached is not None:
+                self._library_scan_cache.move_to_end(cache_key)
         if cached is None:
             meta = read_recording_meta(sidecar, audio.name)
             if meta:
@@ -871,11 +877,10 @@ class Bridge:
                 "audio_url": audio.as_uri(),
             }
             cached = (epoch, warnings, item)
-            self._library_scan_cache[cache_key] = cached
-            while len(self._library_scan_cache) > MAX_LIBRARY_SCAN_CACHE:
-                self._library_scan_cache.popitem(last=False)
-        else:
-            self._library_scan_cache.move_to_end(cache_key)
+            with self._state_lock:
+                self._library_scan_cache[cache_key] = cached
+                while len(self._library_scan_cache) > MAX_LIBRARY_SCAN_CACHE:
+                    self._library_scan_cache.popitem(last=False)
         epoch, warnings, item = cached
         formats = [
             fmt for fmt, (suffix, _writer) in FORMATS.items()
@@ -1191,7 +1196,9 @@ class Bridge:
         if not watch_dir.is_dir() or (not colocate and output_unavailable):
             return {"ok": False, "error": "Sync- oder Ausgabeordner ist nicht verfügbar."}
         effective_output = output_dir or watch_dir
-        items, skipped = self.batch_controller.scan(watch_dir, effective_output, raw_settings)
+        items, skipped, total_audio = self.batch_controller.scan(
+            watch_dir, effective_output, raw_settings
+        )
         with self._state_lock:
             self._pending_batch = items
             self._pending_batch_fingerprint = self._settings_fingerprint(raw_settings)
@@ -1205,6 +1212,7 @@ class Bridge:
                 for item in items
             ],
             "skipped_unstable": skipped,
+            "total_audio": total_audio,
         }
 
     def start_batch(self, raw_settings: Any) -> dict[str, Any]:
@@ -1413,22 +1421,31 @@ class Bridge:
                 payload_json = json.dumps(payload, ensure_ascii=False)
                 self.window.run_js(f"window.__bortDispatch({json.dumps(payload_json)});")
             except Exception:
-                # Nur diesen Versand abbrechen: on_window_closed() würde den
-                # Einweg-Latch in cancel_all_streams() setzen und damit nach
-                # einem transienten run_js-Fehler jeden weiteren Start
-                # blockieren. Der echte Fensterschluss kommt vom closed-Event.
+                # Nur dieses eine Ereignis überspringen: on_window_closed()
+                # würde den Einweg-Latch in cancel_all_streams() setzen und
+                # damit nach einem transienten run_js-Fehler jeden weiteren
+                # Start blockieren. Ein break würde den Rest des Bündels
+                # verwerfen — die Events sind in _drain_events bereits aus
+                # self._events entfernt.
                 logger.warning("Ereignis-Versand an die UI fehlgeschlagen.", exc_info=True)
-                break
-            if payload["type"] in {"done", "error", "cancelled"}:
-                with self._state_lock:
-                    if self._active_job_id == job_id:
-                        self._active_job_id = None
-                        self._active_job_abort = None
-            elif payload["type"] == "batch_finished":
-                with self._state_lock:
-                    if self._active_batch_id == job_id:
-                        self._active_batch_id = None
-                        self._pending_batch = []
+            finally:
+                # Der Job-Latch fällt unabhängig davon, ob run_js durchkam.
+                # Sonst bliebe _active_job_id nach einem gescheiterten
+                # done/error/cancelled für immer gesetzt.
+                # ponytail: das verlorene UI-Ereignis wird nicht nachgereicht —
+                # ein Requeue würde beim nächsten Drain am valid_id-Filter
+                # oben scheitern (der Latch ist dann schon gefallen). Nachrüsten,
+                # wenn Terminal-Events eine eigene Zustellgarantie brauchen.
+                if payload["type"] in {"done", "error", "cancelled"}:
+                    with self._state_lock:
+                        if self._active_job_id == job_id:
+                            self._active_job_id = None
+                            self._active_job_abort = None
+                elif payload["type"] == "batch_finished":
+                    with self._state_lock:
+                        if self._active_batch_id == job_id:
+                            self._active_batch_id = None
+                            self._pending_batch = []
         with self._state_lock:
             self._delivery_active = False
         self._schedule_drain()

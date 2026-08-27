@@ -62,10 +62,11 @@ def convert_to_wav(audio_path: Path, output_dir: Path | None = None) -> Path:
             f"Unterstützt: {', '.join(sorted(SUPPORTED_AUDIO_EXTS))}"
         )
 
+    owned_dir: Path | None = None
     if output_dir is None:
         # Eigener 0700-Ordner je Lauf: ein fester Name in /tmp wäre für jeden
         # lokalen Nutzer lesbar und ließe sich vorab blockieren.
-        output_dir = Path(tempfile.mkdtemp(prefix="bort-wav-"))
+        output_dir = owned_dir = Path(tempfile.mkdtemp(prefix="bort-wav-"))
     else:
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -86,34 +87,43 @@ def convert_to_wav(audio_path: Path, output_dir: Path | None = None) -> Path:
         str(wav_path),
     ]
 
-    try:
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            start_new_session=True,
-        )
-    except OSError as exc:
-        raise AudioError(f"ffmpeg konnte nicht gestartet werden: {exc}") from exc
-    if not register_process(process):
-        terminate_process_tree(process)
-        raise AudioError("Audio-Konvertierung wurde abgebrochen.")
+    # Scheitert die Konvertierung (ffmpeg fehlt, Timeout, SIGTERM vom
+    # Batch-Abbruch), räumt sie den selbst angelegten mkdtemp-Ordner samt
+    # halber WAV wieder weg. Ein vom Aufrufer übergebenes output_dir bleibt
+    # unangetastet.
     try:
         try:
-            _stdout_text, stderr_text = process.communicate(timeout=CONVERT_TIMEOUT)
-        except subprocess.TimeoutExpired:
-            terminate_process_tree(process)
-            _stdout_text, stderr_text = process.communicate()
-            raise AudioError(
-                f"ffmpeg Zeitüberschreitung nach {CONVERT_TIMEOUT:g}s "
-                "bei der Audio-Konvertierung."
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                start_new_session=True,
             )
-    finally:
-        unregister_process(process)
+        except OSError as exc:
+            raise AudioError(f"ffmpeg konnte nicht gestartet werden: {exc}") from exc
+        if not register_process(process):
+            terminate_process_tree(process)
+            raise AudioError("Audio-Konvertierung wurde abgebrochen.")
+        try:
+            try:
+                _stdout_text, stderr_text = process.communicate(timeout=CONVERT_TIMEOUT)
+            except subprocess.TimeoutExpired:
+                terminate_process_tree(process)
+                _stdout_text, stderr_text = process.communicate()
+                raise AudioError(
+                    f"ffmpeg Zeitüberschreitung nach {CONVERT_TIMEOUT:g}s "
+                    "bei der Audio-Konvertierung."
+                )
+        finally:
+            unregister_process(process)
 
-    if process.returncode != 0:
-        raise AudioError(f"ffmpeg Fehler: {stderr_text}")
+        if process.returncode != 0:
+            raise AudioError(f"ffmpeg Fehler: {stderr_text}")
+    except BaseException:
+        if owned_dir is not None:
+            shutil.rmtree(owned_dir, ignore_errors=True)
+        raise
 
     return wav_path
 

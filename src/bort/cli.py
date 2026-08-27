@@ -190,6 +190,7 @@ def main(argv: list[str] | None = None) -> int:
             logger.debug("Marker-Datei ist kein Bookmark-Format: %s", exc)
             bookmarks = []
 
+    wav_path: Path | None = None
     try:
         # --- Backend-Verzweigung ---
         if args.backend == "whisperx":
@@ -266,10 +267,6 @@ def main(argv: list[str] | None = None) -> int:
         for path in output_paths:
             logger.info("  - %s", path)
 
-        if args.backend == "whispercpp" and not args.keep_wav:
-            logger.debug("Lösche temporäre WAV-Datei: %s", wav_path)
-            cleanup_wav(wav_path)
-
     except (
         AudioError,
         MarkerError,
@@ -281,6 +278,12 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         logger.info("Abgebrochen.")
         return 130
+    finally:
+        # Auch auf dem Fehlerpfad: sonst bleibt je Fehllauf ein mkdtemp-Ordner
+        # mit der vollständigen 16k-WAV liegen.
+        if wav_path is not None and not args.keep_wav:
+            logger.debug("Lösche temporäre WAV-Datei: %s", wav_path)
+            cleanup_wav(wav_path)
 
     return 0
 

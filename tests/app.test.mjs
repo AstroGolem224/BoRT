@@ -2,9 +2,11 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFileSync } from 'node:fs';
 
-// app.js ist eine IIFE ohne Modul-Exports. formatTime wird per Regex aus dem
-// Quelltext extrahiert und isoliert ausgewertet; bleibt die Funktion nicht
-// alleinstehend erhalten, wird der Test übersprungen statt den Code umzubauen.
+// app.js ist eine IIFE ohne Modul-Exports. Die Funktionen werden per Regex aus
+// dem Quelltext extrahiert und isoliert ausgewertet. Findet die Regex ihr Ziel
+// nicht mehr, ist das ein Fehlschlag (assert.ok), kein Überspringen: ein
+// übersprungener Test lässt genau die Regression durch, gegen die er
+// geschrieben wurde, und meldet trotzdem Exit-Code 0.
 const source = readFileSync(new URL('../src/bort/web/app.js', import.meta.url), 'utf8');
 
 const extractFormatTime = () => {
@@ -17,12 +19,9 @@ const extractFormatTime = () => {
   }
 };
 
-test('formatTime zeigt Stunden ab 1h an und MM:SS darunter', (t) => {
+test('formatTime zeigt Stunden ab 1h an und MM:SS darunter', () => {
   const formatTime = extractFormatTime();
-  if (!formatTime) {
-    t.skip('formatTime nicht mehr als eigenständige Arrow-Funktion in app.js auffindbar');
-    return;
-  }
+  assert.ok(formatTime, 'formatTime nicht mehr als eigenständige Arrow-Funktion in app.js auffindbar');
   assert.equal(formatTime(75), '01:15');
   assert.equal(formatTime(59.9), '00:59');
   assert.equal(formatTime(60), '01:00');
@@ -32,12 +31,9 @@ test('formatTime zeigt Stunden ab 1h an und MM:SS darunter', (t) => {
   assert.equal(formatTime(7202), '2:00:02');
 });
 
-test('formatTime klemmt negative und ungültige Werte auf 00:00', (t) => {
+test('formatTime klemmt negative und ungültige Werte auf 00:00', () => {
   const formatTime = extractFormatTime();
-  if (!formatTime) {
-    t.skip('formatTime nicht mehr als eigenständige Arrow-Funktion in app.js auffindbar');
-    return;
-  }
+  assert.ok(formatTime, 'formatTime nicht mehr als eigenständige Arrow-Funktion in app.js auffindbar');
   assert.equal(formatTime(-3), '00:00');
   assert.equal(formatTime(Number.NaN), '00:00');
   assert.equal(formatTime(Number.POSITIVE_INFINITY), '00:00');
@@ -54,28 +50,99 @@ const extractCapLogText = () => {
   }
 };
 
-test('capLogText hängt Zeilen an und meldet Kappung erst ab 30000 Zeichen', (t) => {
+test('capLogText hängt Zeilen an und meldet Kappung erst ab 30000 Zeichen', () => {
   const capLogText = extractCapLogText();
-  if (!capLogText) {
-    t.skip('capLogText nicht mehr als eigenständige Arrow-Funktion in app.js auffindbar');
-    return;
-  }
+  assert.ok(capLogText, 'capLogText nicht mehr als eigenständige Arrow-Funktion in app.js auffindbar');
   assert.deepEqual(capLogText('', 'Hallo'), { text: 'Hallo\n', capped: false });
   const boundary = capLogText('x'.repeat(29998), 'y');
   assert.deepEqual(boundary, { text: `${'x'.repeat(29998)}y\n`, capped: false });
 });
 
-test('capLogText behält die letzten 30000 Zeichen und markiert die Kappung', (t) => {
+test('capLogText behält die letzten 30000 Zeichen und markiert die Kappung', () => {
   const capLogText = extractCapLogText();
-  if (!capLogText) {
-    t.skip('capLogText nicht mehr als eigenständige Arrow-Funktion in app.js auffindbar');
-    return;
-  }
+  assert.ok(capLogText, 'capLogText nicht mehr als eigenständige Arrow-Funktion in app.js auffindbar');
   const result = capLogText(`ALT-${'z'.repeat(30010)}`, 'Neu');
   assert.equal(result.capped, true);
   assert.equal(result.text.length, 30000);
   assert.ok(result.text.endsWith('Neu\n'));
   assert.ok(!result.text.includes('ALT-'));
+});
+
+// batchScanSummary: "0 ausstehende Dateien" verschwieg, ob der Ordner leer war
+// oder schlicht alles schon transkribiert ist.
+const extractBatchScanSummary = () => {
+  const match = source.match(/const batchScanSummary = \(total, pending\) => \{([\s\S]*?)\n  \};/);
+  if (!match) return null;
+  try {
+    return new Function(`return (total, pending) => {${match[1]}\n};`)();
+  } catch (_) {
+    return null;
+  }
+};
+
+// Geprüft wird der echte Handler, nicht nur der Formatierer: sonst bliebe der
+// Test grün, wenn batchScanSummary existiert, aber niemand ihn aufruft.
+// Die unstable-count-Zeile behält daneben ihre eigene Aussage.
+test('scan-batch-Handler meldet die Lage und zählt Instabile getrennt', async () => {
+  const summary = extractBatchScanSummary();
+  assert.ok(summary, 'batchScanSummary nicht mehr als eigenständige Arrow-Funktion in app.js auffindbar');
+  const match = source.match(
+    /\$\('scan-batch'\)\.addEventListener\('click', async \(\) => \{([\s\S]*?)\n {2}\}\);/,
+  );
+  assert.ok(match, "scan-batch-Handler nicht mehr als async-Arrow in app.js auffindbar");
+  const handler = new Function(
+    'api',
+    '$',
+    'setViewStatus',
+    'flushSettings',
+    'formSettings',
+    'showActionFailure',
+    'renderBatchItems',
+    'pendingBatchItems',
+    'completedBatchItems',
+    'batchOutcomeMap',
+    'batchNeedsRescan',
+    'batchScanSummary',
+    `return (async () => {${match[1]}\n})();`,
+  );
+  const runScan = async (result) => {
+    const nodes = { 'unstable-count': {} };
+    const statuses = [];
+    await handler(
+      { scan_batch: async () => result },
+      (id) => (nodes[id] ||= {}),
+      (_target, message, isError) => statuses.push([message, Boolean(isError)]),
+      () => {},
+      () => ({}),
+      () => {},
+      () => {},
+      [],
+      new Set(),
+      new Map(),
+      false,
+      summary,
+    );
+    return { nodes, statuses };
+  };
+
+  const allDone = await runScan({ ok: true, items: [], skipped_unstable: 0, total_audio: 4 });
+  assert.equal(allDone.statuses.at(-1)[0], '4 Dateien, alle bereits transkribiert — 0 ausstehend.');
+  assert.equal(allDone.nodes['unstable-count'].textContent, '0 noch instabile Dateien übersprungen.');
+
+  const empty = await runScan({ ok: true, items: [], skipped_unstable: 0, total_audio: 0 });
+  assert.equal(empty.statuses.at(-1)[0], 'Keine Audiodateien im Ordner gefunden.');
+
+  const single = await runScan({ ok: true, items: [], skipped_unstable: 0, total_audio: 1 });
+  assert.equal(single.statuses.at(-1)[0], '1 Datei, alle bereits transkribiert — 0 ausstehend.');
+
+  const pending = await runScan({
+    ok: true,
+    items: [{ audio_name: 'a.wav', marker_name: null }],
+    skipped_unstable: 2,
+    total_audio: 4,
+  });
+  assert.equal(pending.statuses.at(-1)[0], '4 Dateien, 1 ausstehend.');
+  assert.equal(pending.nodes['unstable-count'].textContent, '2 noch instabile Dateien übersprungen.');
 });
 
 // uriListToPaths: WebKitGTK-Drops liefern Pfade nur als file://-URI-Liste.
@@ -89,12 +156,9 @@ const extractUriListToPaths = () => {
   }
 };
 
-test('uriListToPaths parst file://-URIs inklusive Prozent-Encoding', (t) => {
+test('uriListToPaths parst file://-URIs inklusive Prozent-Encoding', () => {
   const uriListToPaths = extractUriListToPaths();
-  if (!uriListToPaths) {
-    t.skip('uriListToPaths nicht mehr als eigenständige Arrow-Funktion in app.js auffindbar');
-    return;
-  }
+  assert.ok(uriListToPaths, 'uriListToPaths nicht mehr als eigenständige Arrow-Funktion in app.js auffindbar');
   assert.deepEqual(
     uriListToPaths('file:///home/user/Aufnahme%201.m4a'),
     ['/home/user/Aufnahme 1.m4a'],
@@ -102,12 +166,9 @@ test('uriListToPaths parst file://-URIs inklusive Prozent-Encoding', (t) => {
   assert.deepEqual(uriListToPaths('file:///tmp/M%C3%A4rchen.ogg'), ['/tmp/Märchen.ogg']);
 });
 
-test('uriListToPaths überspringt Kommentare, Nicht-file-Schemata und Müllzeilen', (t) => {
+test('uriListToPaths überspringt Kommentare, Nicht-file-Schemata und Müllzeilen', () => {
   const uriListToPaths = extractUriListToPaths();
-  if (!uriListToPaths) {
-    t.skip('uriListToPaths nicht mehr als eigenständige Arrow-Funktion in app.js auffindbar');
-    return;
-  }
+  assert.ok(uriListToPaths, 'uriListToPaths nicht mehr als eigenständige Arrow-Funktion in app.js auffindbar');
   const list = [
     '# Kommentarzeile',
     'file:///pfad/a.wav',
@@ -119,12 +180,9 @@ test('uriListToPaths überspringt Kommentare, Nicht-file-Schemata und Müllzeile
   assert.deepEqual(uriListToPaths(list), ['/pfad/a.wav', '/pfad/b.ogg']);
 });
 
-test('uriListToPaths toleriert leere Eingaben und Ordner-URIs mit Slash', (t) => {
+test('uriListToPaths toleriert leere Eingaben und Ordner-URIs mit Slash', () => {
   const uriListToPaths = extractUriListToPaths();
-  if (!uriListToPaths) {
-    t.skip('uriListToPaths nicht mehr als eigenständige Arrow-Funktion in app.js auffindbar');
-    return;
-  }
+  assert.ok(uriListToPaths, 'uriListToPaths nicht mehr als eigenständige Arrow-Funktion in app.js auffindbar');
   assert.deepEqual(uriListToPaths(''), []);
   assert.deepEqual(uriListToPaths(null), []);
   assert.deepEqual(
@@ -148,24 +206,18 @@ const extractResolveShortcut = () => {
 const keyEvent = ({ key = '', ctrlKey = false, altKey = false, shiftKey = false, metaKey = false }) =>
   ({ key, ctrlKey, altKey, shiftKey, metaKey });
 
-test('resolveShortcut bildet Strg+E/Strg+B/Strg+T auf Aktionen ab (auch Cmd+)', (t) => {
+test('resolveShortcut bildet Strg+E/Strg+B/Strg+T auf Aktionen ab (auch Cmd+)', () => {
   const resolveShortcut = extractResolveShortcut();
-  if (!resolveShortcut) {
-    t.skip('resolveShortcut nicht mehr als eigenständige Arrow-Funktion in app.js auffindbar');
-    return;
-  }
+  assert.ok(resolveShortcut, 'resolveShortcut nicht mehr als eigenständige Arrow-Funktion in app.js auffindbar');
   assert.deepEqual(resolveShortcut(keyEvent({ key: 'e', ctrlKey: true })), { action: 'transcribe-start' });
   assert.deepEqual(resolveShortcut(keyEvent({ key: 'E', ctrlKey: true })), { action: 'transcribe-start' });
   assert.deepEqual(resolveShortcut(keyEvent({ key: 'b', metaKey: true })), { action: 'batch-toggle' });
   assert.deepEqual(resolveShortcut(keyEvent({ key: 't', ctrlKey: true })), { action: 'theme-toggle' });
 });
 
-test('resolveShortcut mappt Alt+1..5 auf die fünf Views', (t) => {
+test('resolveShortcut mappt Alt+1..5 auf die fünf Views', () => {
   const resolveShortcut = extractResolveShortcut();
-  if (!resolveShortcut) {
-    t.skip('resolveShortcut nicht mehr als eigenständige Arrow-Funktion in app.js auffindbar');
-    return;
-  }
+  assert.ok(resolveShortcut, 'resolveShortcut nicht mehr als eigenständige Arrow-Funktion in app.js auffindbar');
   assert.deepEqual(resolveShortcut(keyEvent({ key: '1', altKey: true })), { action: 'view-switch', view: 'transcribe' });
   assert.deepEqual(resolveShortcut(keyEvent({ key: '2', altKey: true })), { action: 'view-switch', view: 'batch' });
   assert.deepEqual(resolveShortcut(keyEvent({ key: '3', altKey: true })), { action: 'view-switch', view: 'library' });
@@ -173,12 +225,9 @@ test('resolveShortcut mappt Alt+1..5 auf die fünf Views', (t) => {
   assert.deepEqual(resolveShortcut(keyEvent({ key: '5', altKey: true })), { action: 'view-switch', view: 'settings' });
 });
 
-test('resolveShortcut feuert nicht auf Kombinationen oder bloße Tasten', (t) => {
+test('resolveShortcut feuert nicht auf Kombinationen oder bloße Tasten', () => {
   const resolveShortcut = extractResolveShortcut();
-  if (!resolveShortcut) {
-    t.skip('resolveShortcut nicht mehr als eigenständige Arrow-Funktion in app.js auffindbar');
-    return;
-  }
+  assert.ok(resolveShortcut, 'resolveShortcut nicht mehr als eigenständige Arrow-Funktion in app.js auffindbar');
   assert.equal(resolveShortcut(keyEvent({ key: '1' })), null); // Ziffer ohne Alt
   assert.equal(resolveShortcut(keyEvent({ key: '6', altKey: true })), null);
   assert.equal(resolveShortcut(keyEvent({ key: 'e' })), null); // Buchstabe ohne Modifikator
@@ -225,12 +274,9 @@ const makeHandleDroppedPaths = () => {
   }
 };
 
-test('handleDroppedPaths leitet Audio-Drops an das Backend durch (kein Client-Gate)', (t) => {
+test('handleDroppedPaths leitet Audio-Drops an das Backend durch (kein Client-Gate)', () => {
   const setup = makeHandleDroppedPaths();
-  if (!setup) {
-    t.skip('handleDroppedPaths nicht mehr als eigenständige Arrow-Funktion in app.js auffindbar');
-    return;
-  }
+  assert.ok(setup, 'handleDroppedPaths nicht mehr als eigenständige Arrow-Funktion in app.js auffindbar');
   setup.fn('audio', ['/home/user/Aufnahme%201.mp3']);
   assert.deepEqual(setup.calls.accepted, [['audio', '/home/user/Aufnahme%201.mp3']]);
   assert.deepEqual(setup.calls.toasts, []);
@@ -239,12 +285,9 @@ test('handleDroppedPaths leitet Audio-Drops an das Backend durch (kein Client-Ga
   assert.deepEqual(setup.calls.accepted[1], ['audio', '/tmp/notizen.txt']);
 });
 
-test('handleDroppedPaths akzeptiert nur JSON-Marker in der Marker-Zone', (t) => {
+test('handleDroppedPaths akzeptiert nur JSON-Marker in der Marker-Zone', () => {
   const setup = makeHandleDroppedPaths();
-  if (!setup) {
-    t.skip('handleDroppedPaths nicht mehr als eigenständige Arrow-Funktion in app.js auffindbar');
-    return;
-  }
+  assert.ok(setup, 'handleDroppedPaths nicht mehr als eigenständige Arrow-Funktion in app.js auffindbar');
   setup.fn('marker', ['/pfad/a.txt', '/pfad/markierung.JSON']);
   assert.deepEqual(setup.calls.accepted, [['marker', '/pfad/markierung.JSON']]);
   assert.deepEqual(setup.calls.toasts, []);
@@ -254,12 +297,9 @@ test('handleDroppedPaths akzeptiert nur JSON-Marker in der Marker-Zone', (t) => 
   assert.match(setup.calls.toasts[0], /\.json/);
 });
 
-test('handleDroppedPaths-Zone watch: hängt Trailing-Slash ab und erlaubt Ordner', (t) => {
+test('handleDroppedPaths-Zone watch: hängt Trailing-Slash ab und erlaubt Ordner', () => {
   const setup = makeHandleDroppedPaths();
-  if (!setup) {
-    t.skip('handleDroppedPaths nicht mehr als eigenständige Arrow-Funktion in app.js auffindbar');
-    return;
-  }
+  assert.ok(setup, 'handleDroppedPaths nicht mehr als eigenständige Arrow-Funktion in app.js auffindbar');
   setup.fn('watch', ['/home/user/Sync-Ordner/']);
   assert.deepEqual(setup.calls.accepted, [['watch', '/home/user/Sync-Ordner']]);
   assert.deepEqual(setup.calls.toasts, []);
@@ -268,12 +308,9 @@ test('handleDroppedPaths-Zone watch: hängt Trailing-Slash ab und erlaubt Ordner
   assert.deepEqual(setup.calls.accepted[1], ['watch', '/home/user/Sync']);
 });
 
-test('handleDroppedPaths-Zone watch: mehrere Pfade und Dateien werden abgewiesen', (t) => {
+test('handleDroppedPaths-Zone watch: mehrere Pfade und Dateien werden abgewiesen', () => {
   const setup = makeHandleDroppedPaths();
-  if (!setup) {
-    t.skip('handleDroppedPaths nicht mehr als eigenständige Arrow-Funktion in app.js auffindbar');
-    return;
-  }
+  assert.ok(setup, 'handleDroppedPaths nicht mehr als eigenständige Arrow-Funktion in app.js auffindbar');
   setup.fn('watch', ['/ordner/eins/', '/ordner/zwei/']);
   assert.equal(setup.calls.accepted.length, 0);
   assert.match(setup.calls.toasts[0], /nur einen Sync-Ordner/);
@@ -295,29 +332,23 @@ const extractTranscribeShortcutAction = () => {
   }
 };
 
-test('transcribeShortcutAction: laufender Job schlägt Abbruch vor, sonst Start', (t) => {
+test('transcribeShortcutAction: laufender Job schlägt Abbruch vor, sonst Start', () => {
   const transcribeShortcutAction = extractTranscribeShortcutAction();
-  if (!transcribeShortcutAction) {
-    t.skip('transcribeShortcutAction nicht mehr als eigenständige Funktion in app.js auffindbar');
-    return;
-  }
+  assert.ok(transcribeShortcutAction, 'transcribeShortcutAction nicht mehr als eigenständige Funktion in app.js auffindbar');
   assert.equal(transcribeShortcutAction({ hasAudio: true, running: true }), 'cancel');
   assert.equal(transcribeShortcutAction({ hasAudio: false, running: true }), 'cancel');
   assert.equal(transcribeShortcutAction({ hasAudio: true, running: false }), 'start');
 });
 
-test('transcribeShortcutAction: ohne Audio keinen Start vorschlagen', (t) => {
+test('transcribeShortcutAction: ohne Audio keinen Start vorschlagen', () => {
   const transcribeShortcutAction = extractTranscribeShortcutAction();
-  if (!transcribeShortcutAction) {
-    t.skip('transcribeShortcutAction nicht mehr als eigenständige Funktion in app.js auffindbar');
-    return;
-  }
+  assert.ok(transcribeShortcutAction, 'transcribeShortcutAction nicht mehr als eigenständige Funktion in app.js auffindbar');
   assert.equal(transcribeShortcutAction({ hasAudio: false, running: false }), 'need-audio');
   assert.equal(transcribeShortcutAction({ hasAudio: '   ', running: false }), 'start');
 });
 
 // Titel-Attribut dokumentiert die Strg+E-Semantik am Abbrechen-Button.
-test('Abbrechen-Button dokumentiert Strg+E-Abbruchsemantik im Titel', (t) => {
+test('Abbrechen-Button dokumentiert Strg+E-Abbruchsemantik im Titel', () => {
   const html = readFileSync(new URL('../src/bort/web/index.html', import.meta.url), 'utf8');
   const button = html.match(/<button id="cancel-transcription"[^>]*>/);
   assert.ok(button, '#cancel-transcription existiert im Markup');
@@ -393,21 +424,15 @@ const buildDispatchHarness = () => {
 
 test('__bortDispatch reicht partial-Events an appendLiveSegment weiter', (t) => {
   const harness = buildDispatchHarness();
-  if (!harness) {
-    t.skip('__bortDispatch nicht mehr als eigenständige Funktion in app.js auffindbar');
-    return;
-  }
+  assert.ok(harness, '__bortDispatch nicht mehr als eigenständige Funktion in app.js auffindbar');
   const segment = { type: 'partial', start: 0.0, end: 2.4, text: 'Hallo Welt' };
   harness.dispatch(null, JSON.stringify(segment));
   assert.deepEqual(harness.calls.liveSegments, [segment]);
 });
 
-test('__bortDispatch ignoriert veraltete cancelled-Events ohne aktiven Job', (t) => {
+test('__bortDispatch ignoriert veraltete cancelled-Events ohne aktiven Job', () => {
   const harness = buildDispatchHarness();
-  if (!harness) {
-    t.skip('__bortDispatch nicht mehr als eigenständige Funktion in app.js auffindbar');
-    return;
-  }
+  assert.ok(harness, '__bortDispatch nicht mehr als eigenständige Funktion in app.js auffindbar');
   const cancelled = JSON.stringify({ type: 'cancelled', message: 'abgebrochen' });
   harness.dispatch(null, cancelled);
   assert.equal(harness.calls.finishedJobs, 0);
@@ -420,11 +445,66 @@ test('__bortDispatch ignoriert veraltete cancelled-Events ohne aktiven Job', (t)
 // Scheitert der Abbruch-Aufruf, muss der Knopf bei laufendem Job wieder
 // klickbar werden. `Boolean(activeJobId)` war invertiert und ließ den Knopf
 // bis zum Job-Ende deaktiviert, obwohl der Job weiterlief.
-test('Abbrechen-Knopf wird nach fehlgeschlagenem Abbruch reaktiviert', () => {
-  const assignments = [...source.matchAll(
-    /\$\('cancel-transcription'\)\.disabled = ([^;]+);/g,
-  )].map((match) => match[1].trim());
-  assert.ok(assignments.length >= 3, 'Zuweisungen an #cancel-transcription.disabled gefunden');
-  assert.equal(assignments.includes('Boolean(activeJobId)'), false);
-  assert.equal(assignments.filter((value) => value === '!activeJobId').length, 2);
+const extractCancelHandler = () => {
+  const match = source.match(
+    /\$\('cancel-transcription'\)\.addEventListener\('click', async \(\) => \{([\s\S]*?)\n {2}\}\);/,
+  );
+  if (!match) return null;
+  try {
+    return new Function(
+      'activeJobId',
+      '$',
+      'setStatus',
+      'api',
+      'showActionFailure',
+      `return (async () => {${match[1]}\n})();`,
+    );
+  } catch (_) {
+    return null;
+  }
+};
+
+// Der Handler wird tatsächlich ausgeführt und der Button-Zustand gelesen –
+// eine Regex über den Quelltext bliebe auch dann grün, wenn die Zuweisungen
+// im falschen Zweig stünden.
+const runCancel = async (handler, activeJobId, cancelResult) => {
+  const button = { disabled: false };
+  const statuses = [];
+  const failures = [];
+  await handler(
+    activeJobId,
+    (id) => (id === 'cancel-transcription' ? button : { disabled: false }),
+    (message, isError) => statuses.push([message, Boolean(isError)]),
+    {
+      cancel_transcription: async () => {
+        if (cancelResult instanceof Error) throw cancelResult;
+        return cancelResult;
+      },
+    },
+    (error) => failures.push(error),
+  );
+  return { button, statuses, failures };
+};
+
+test('Abbrechen-Knopf wird nach fehlgeschlagenem Abbruch reaktiviert', async () => {
+  const handler = extractCancelHandler();
+  assert.ok(handler, 'cancel-transcription-Handler nicht mehr als async-Arrow in app.js auffindbar');
+  // Bridge-Aufruf wirft: Knopf muss bei laufendem Job wieder klickbar sein.
+  const thrown = await runCancel(handler, 'job-1', new Error('Bridge weg'));
+  assert.equal(thrown.button.disabled, false);
+  assert.equal(thrown.failures.length, 1);
+
+  // Backend antwortet ok:false: ebenfalls reaktivieren, mit Fehlerstatus.
+  const refused = await runCancel(handler, 'job-1', { ok: false, error: 'zu spät' });
+  assert.equal(refused.button.disabled, false);
+  assert.deepEqual(refused.statuses.at(-1), ['zu spät', true]);
+
+  // Erfolgreicher Abbruch: Knopf bleibt gesperrt, bis das Job-Ende eintrifft.
+  const accepted = await runCancel(handler, 'job-1', { ok: true });
+  assert.equal(accepted.button.disabled, true);
+
+  // Ohne aktiven Job passiert gar nichts.
+  const idle = await runCancel(handler, null, { ok: true });
+  assert.equal(idle.button.disabled, false);
+  assert.equal(idle.statuses.length, 0);
 });

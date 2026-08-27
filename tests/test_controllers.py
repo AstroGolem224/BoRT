@@ -293,6 +293,27 @@ def test_batch_releases_job_lock_and_emits_counted_finish() -> None:
     jobs.release()
 
 
+def test_batch_scan_reports_total_audio_count(tmp_path: Path) -> None:
+    """Ohne Gesamtzahl sieht "0 ausstehend" wie ein leerer Ordner aus."""
+    watch_dir = tmp_path / "watch"
+    output_dir = tmp_path / "output"
+    watch_dir.mkdir()
+    output_dir.mkdir()
+    controller = BatchController(JobController(), lambda _event: None)
+
+    # Leerer Ordner: nichts da, nichts ausstehend.
+    assert controller.scan(watch_dir, output_dir) == ([], 0, 0)
+
+    # Vier Aufnahmen, alle mit frischem Transkript: 0 ausstehend, aber 4 gesehen.
+    for index in range(4):
+        audio = watch_dir / f"session{index}.m4a"
+        audio.write_bytes(b"")
+        (output_dir / f"session{index}.txt").write_text("fertig", encoding="utf-8")
+    stable, unstable, total = controller.scan(watch_dir, output_dir)
+    assert (stable, unstable) == ([], 0)
+    assert total == 4
+
+
 def test_batch_scan_checks_stability_in_parallel(tmp_path: Path) -> None:
     watch_dir = tmp_path / "watch"
     output_dir = tmp_path / "output"
@@ -325,13 +346,14 @@ def test_batch_scan_checks_stability_in_parallel(tmp_path: Path) -> None:
     original_stable = batch_module.is_file_stable
     try:
         batch_module.is_file_stable = slow_stable
-        stable, unstable = controller.scan(watch_dir, output_dir)
+        stable, unstable, total = controller.scan(watch_dir, output_dir)
     finally:
         batch_module.is_file_stable = original_stable
 
     # Gleiche Reihenfolge und gleiche Elemente wie seriell, aber parallel.
     assert stable == serial
     assert unstable == 0
+    assert total == len(serial)
     assert active["max"] >= 2, "Stabilitätsprüfung muss parallel laufen"
 
 

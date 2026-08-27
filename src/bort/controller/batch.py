@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
-from ..batch import PendingItem, _has_output, is_file_stable, scan_pending
+from ..batch import PendingItem, _has_output, is_file_stable, iter_audio_paths, scan_pending
 from ..markers import MarkerError, load_markers
 from ..streaming import terminate_registered_processes
 from .jobs import EventEmitter, JobController, TranscriptionParams, transcription_worker
@@ -35,10 +35,16 @@ class BatchController:
 
     def scan(
         self, watch_dir: Path, output_dir: Path, settings: dict | None = None
-    ) -> tuple[list[PendingItem], int]:
+    ) -> tuple[list[PendingItem], int, int]:
+        """Liefert (stabile Kandidaten, instabil übersprungen, Audios im Ordner)."""
         candidates = scan_pending(watch_dir, output_dir, settings)
+        # Gesamtzahl für die UI-Meldung: ohne sie ist "0 ausstehend" nicht von
+        # "Ordner leer" zu unterscheiden. ponytail: zweiter, billiger Listing-Lauf
+        # statt scan_pending umzubauen (10 Aufrufer in den Tests). Kommt zwischen
+        # beiden Läufen eine Datei dazu, ist nur die Zahl in der Meldung schief.
+        total = len(iter_audio_paths(watch_dir))
         if not candidates:
-            return [], 0
+            return [], 0, total
         # is_file_stable wartet 2 s pro Datei; die Stichproben laufen deshalb
         # parallel. executor.map erhält die Kandidatenreihenfolge, das
         # Ergebnis ist damit identisch zum seriellen Lauf.
@@ -47,7 +53,7 @@ class BatchController:
                 executor.map(lambda item: is_file_stable(item.audio_path), candidates)
             )
         stable = [item for item, is_stable in zip(candidates, flags) if is_stable]
-        return stable, len(candidates) - len(stable)
+        return stable, len(candidates) - len(stable), total
 
     def start(self, built: list[tuple[PendingItem, TranscriptionParams | None]]) -> str | None:
         acquired = self._jobs.acquire()

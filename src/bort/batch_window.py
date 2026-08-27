@@ -177,7 +177,7 @@ class BatchWindow(ctk.CTkToplevel):
         self.scan_thread.start()
 
     def _run_scan(self, watch_dir: Path, output_dir: Path) -> None:
-        stable, skipped = self.batch_controller.scan(watch_dir, output_dir)
+        stable, skipped, _total = self.batch_controller.scan(watch_dir, output_dir)
         self.log_queue.put(("scan_done", stable, skipped))
 
     def _on_scan_done(self, stable: list[PendingItem], skipped: int) -> None:
