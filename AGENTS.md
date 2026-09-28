@@ -88,6 +88,13 @@ Im GUI-Fenster gibt es einen "Ordner öffnen"-Button, der das Ausgabeverzeichnis
 - Benachbarte Segmente desselben Sprechers werden zu einem Marker-Intervall zusammengeführt.
 - **Mindeststand von whisper-tagger:** Commit `6981fce` ("clamp overlong segments before whisperX alignment"). Ohne diesen Commit stirbt der Subprocess bei langen Aufnahmen mit Stille am Bandende an `torch.OutOfMemoryError` im Alignment-Schritt (ein VAD-Loch dehnt das End-Timestamp eines Segments über Minuten, `whisperx.align` schneidet das Fenster am Stück). Symptom in BoRT: "Prozessfehler (Code 1)" mit CUDA-OOM-Traceback im Log. Umgehung ohne Update: `--no-diarize`.
 
+## Beschleunigte Sprecherzuordnung
+
+- Seit whisper-tagger-Commit `a50f870` nutzt die zusätzliche Sprecher-Mehrheitszuordnung einen Intervallindex statt vollständiger pandas-Zeilenscans je Wort. Automatische Diarisierung, Alignment, Stimmprofile und Decoderparameter bleiben erhalten.
+- `runtime_metrics` enthält zusätzlich `assign_word_speakers_seconds` und `majority_assignment_seconds`; beide sind Teil von `total_seconds`, aber nicht von `diarize_seconds`.
+- Für isolierte Backendtests kann vor dem BoRT-Start `BORT_WHISPER_TAGGER_SCRIPT` auf ein alternatives Pipeline-Script gesetzt werden. Der bisherige `run.sh`-Wrapper liefert weiterhin die Python-/CUDA-Umgebung. Im Normalbetrieb ist keine Variable nötig.
+- Integrationsprüfung und echte Laufzeitmessung: `docs/performance-2026-09-28.md`.
+
 ## Tests
 
 ```bash
