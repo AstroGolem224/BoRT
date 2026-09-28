@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,7 +31,14 @@ logger = logging.getLogger(__name__)
 
 # Default-Pfade zum whisper-tagger-Projekt (relativ zu Home).
 WHISPER_TAGGER_DIR = Path.home() / "projects" / "whisper-tagger"
-WHISPER_TAGGER_SCRIPT = WHISPER_TAGGER_DIR / "whisperx_transcribe.py"
+# An alternate script can be tested without touching the active backend or
+# mixing its Python/CUDA dependencies into BoRT. The original run.sh still
+# supplies the environment and authentication.
+WHISPER_TAGGER_SCRIPT = Path(
+    os.environ.get(
+        "BORT_WHISPER_TAGGER_SCRIPT", str(WHISPER_TAGGER_DIR / "whisperx_transcribe.py")
+    )
+).expanduser().resolve()
 WHISPER_TAGGER_RUN = WHISPER_TAGGER_DIR / "run.sh"
 
 # Default-Speaker-Prefix für das sprecherNNN-Labeling.
@@ -70,7 +78,8 @@ def _ensure_backend_available() -> None:
     """Prüft, dass das whisper-tagger-Projekt vorhanden ist."""
     if not WHISPER_TAGGER_RUN.exists() or not WHISPER_TAGGER_SCRIPT.exists():
         raise WhisperXError(
-            f"whisperX-Backend nicht gefunden unter {WHISPER_TAGGER_DIR}. "
+            f"whisperX-Backend nicht gefunden: Wrapper {WHISPER_TAGGER_RUN}, "
+            f"Script {WHISPER_TAGGER_SCRIPT}. "
             "Bitte das whisper-tagger-Projekt einrichten."
         )
 

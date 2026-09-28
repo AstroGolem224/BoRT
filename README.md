@@ -286,3 +286,20 @@ src/bort/
 ## Lizenz
 
 MIT
+
+### Isolierten whisperX-Backendstand verwenden
+
+`BORT_WHISPER_TAGGER_SCRIPT=/absoluter/pfad/whisperx_transcribe.py` wählt optional
+nur das Pipeline-Script. Der vorhandene Wrapper
+`~/projects/whisper-tagger/run.sh` liefert weiterhin die getrennte Python-/CUDA-
+Umgebung und Authentifizierung. Ohne diese Variable gilt der bisherige Pfad.
+Damit lässt sich ein optimierter Backendstand in einem separaten BoRT-Worktree
+starten, ohne Dateien oder Prozesse einer laufenden Installation zu verändern.
+Die Variable muss vor dem Start von BoRT gesetzt sein. Zum bisherigen Stand
+zurückkehren: BoRT schließen und wieder mit dem normalen Starter öffnen.
+
+Die Beschleunigung der Sprecher-Mehrheitszuordnung liegt im externen
+whisper-tagger, einschließlich `speaker_assignment.py`; die BoRT-Änderung allein
+beschleunigt den alten Backendstand nicht. Automatische Sprechererkennung,
+Alignment und Stimmprofile bleiben erhalten. Siehe
+[Implementierung und Prüfung](docs/superpowers/plans/2026-09-28-speaker-assignment-performance.md).
