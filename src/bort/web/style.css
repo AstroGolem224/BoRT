@@ -803,6 +803,8 @@ button.speaker-choice.active {
 .batch-item div span, .batch-outcome, .empty-state { color: var(--muted); font-size: 13px; }
 .batch-outcome { text-align: right; }
 .batch-outcome.error { color: var(--danger); }
+/* Outcome und Löschen-Knopf sitzen zusammen am rechten Rand. */
+.batch-tail { display: flex; align-items: center; gap: 10px; }
 .empty-state { margin: 4px 0; }
 
 /* Bibliothek: kompakte Glaskarten mit der BoR-Peaks-Vorschau. */
@@ -856,6 +858,21 @@ button.speaker-choice.active {
 }
 .library-actions { display: flex; gap: 9px; align-items: center; }
 .library-actions .primary { padding: 10px 15px !important; }
+
+/* Löschen-Knopf: kompakt, Gefahrenaktion am Rand der Karte. */
+.library-delete,
+.batch-delete {
+  min-width: 30px;
+  padding: 4px 8px !important;
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0.6;
+  transition: opacity 0.15s var(--ease), color 0.18s ease;
+}
+.library-delete:hover,
+.batch-delete:hover { opacity: 1; color: var(--danger); }
+.library-delete:focus-visible,
+.batch-delete:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 
 .placeholder { margin-top: 110px; text-align: center; }
 .placeholder h1 { margin-bottom: 10px; }

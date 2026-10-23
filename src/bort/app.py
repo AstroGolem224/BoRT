@@ -36,6 +36,7 @@ from .controller.speaker_edit import (
     rename_recording_family,
 )
 from .mailer import MailError, is_valid_address, load_app_password, send_zip, store_app_password
+from .recording_delete import DeleteError, delete_recording_family
 from .sidecar import read_recording_meta, resample_peaks
 from .speaker_review import ReviewError, load_review
 from .speakers import SpeakerSegment
@@ -1017,6 +1018,65 @@ class Bridge:
             "audio_path": str(audio),
             "marker_path": str(marker) if marker else "",
         }
+
+    def delete_library_item(self, item_id: Any) -> dict[str, Any]:
+        """Verschiebt eine Aufnahme samt Artefakten in den Papierkorb.
+
+        Der Pfad kommt ausschließlich aus der generationgebundenen internen
+        Zuordnung – ein item_id aus dem Frontend kann damit niemals auf eine
+        Datei außerhalb des Bibliotheksordners zeigen.
+        """
+        try:
+            audio = self._library_audio(item_id)
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
+        try:
+            moved = delete_recording_family(audio)
+        except DeleteError as exc:
+            return {"ok": False, "error": str(exc)}
+        with self._state_lock:
+            self._library_items.pop(item_id, None)
+        return {"ok": True, "deleted": len(moved), "name": audio.name}
+
+    def delete_batch_item(self, audio_name: Any) -> dict[str, Any]:
+        """Verschiebt eine Batch-Quelldatei samt Artefakten in den Papierkorb.
+
+        Der Name wird gegen den Sync-Ordner aufgelöst, nicht als Pfad
+        interpretiert: ``../``-Anteile können so nicht aus dem Ordner
+        herausführen. Der Name muss zu einem der aktuell gescannten Items
+        gehören – der Scan ist die einzige Quelle der Wahrheit.
+        """
+        if not isinstance(audio_name, str) or not audio_name.strip():
+            return {"ok": False, "error": "Ungültige Auswahl."}
+        with self._state_lock:
+            watch_dir = self._paths.get("watch")
+            pending = list(self._pending_batch)
+            running = self._active_batch_id is not None
+        if running:
+            return {"ok": False, "error": "Der Batch läuft gerade. Bitte warten."}
+        if watch_dir is None or not watch_dir.is_dir():
+            return {"ok": False, "error": "Kein Sync-Ordner ausgewählt."}
+        match = next(
+            (item for item in pending if item.audio_path.name == audio_name), None
+        )
+        if match is None:
+            return {"ok": False, "error": "Datei nicht gefunden. Bitte neu scannen."}
+        audio = match.audio_path
+        try:
+            audio.resolve().relative_to(watch_dir.resolve())
+        except ValueError:
+            return {"ok": False, "error": "Datei liegt nicht im Sync-Ordner."}
+        try:
+            moved = delete_recording_family(audio)
+        except DeleteError as exc:
+            return {"ok": False, "error": str(exc)}
+        # Gescannte Items nachziehen: die gelöschte Datei darf nicht mehr
+        # im nächsten Batch-Lauf auftauchen.
+        with self._state_lock:
+            self._pending_batch = [
+                item for item in self._pending_batch if item.audio_path != audio
+            ]
+        return {"ok": True, "deleted": len(moved), "name": audio.name}
 
     def pick_export_dir(self) -> dict[str, Any]:
         chosen = self._dialog(

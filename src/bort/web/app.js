@@ -884,7 +884,45 @@
       const knownOutcome = batchOutcomeMap.get(item.audio_name);
       outcome.textContent = knownOutcome?.text || 'Ausstehend';
       outcome.classList.toggle('error', Boolean(knownOutcome?.error));
-      row.append(names, outcome);
+      const tail = document.createElement('span');
+      tail.className = 'batch-tail';
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'batch-delete';
+      remove.textContent = '🗑';
+      remove.title = 'Datei löschen';
+      remove.setAttribute('aria-label', `${item.audio_name} löschen`);
+      remove.addEventListener('click', async () => {
+        if (!(await confirmDialog(
+          `„${item.audio_name}“ löschen?\n\nDie Quelldatei landet im Papierkorb und kann wiederhergestellt werden.`,
+        ))) return;
+        let result;
+        try {
+          result = await api.delete_batch_item(item.audio_name);
+        } catch (error) {
+          showActionFailure(error);
+          return;
+        }
+        if (!result.ok) {
+          setViewStatus('batch-status', result.error || 'Löschen fehlgeschlagen.', true);
+          return;
+        }
+        // Item aus der Liste entfernen: die Zählung und der Start-Button
+        // müssen den gelöschten Eintrag nicht mehr mitzählen.
+        pendingBatchItems = pendingBatchItems.filter(
+          (entry) => entry.audio_name !== item.audio_name,
+        );
+        batchOutcomeMap.delete(item.audio_name);
+        completedBatchItems.delete(item.audio_name);
+        row.remove();
+        $('pending-count').textContent =
+          `${pendingBatchItems.length} ${pendingBatchItems.length === 1 ? 'Datei' : 'Dateien'}`;
+        $('start-batch').disabled =
+          pendingBatchItems.length === 0 || Boolean(activeBatchId) || batchNeedsRescan;
+        setViewStatus('batch-status', `„${item.audio_name}“ in den Papierkorb verschoben.`);
+      });
+      tail.append(outcome, remove);
+      row.append(names, tail);
       target.append(row);
     });
     if (!items.length) {
@@ -1192,6 +1230,37 @@
         setStatus('Aufnahme aus der Bibliothek vorbereitet.');
       });
       actions.append(transcribe);
+      const remove = document.createElement('button');
+      remove.type = 'button';
+      remove.className = 'library-delete';
+      remove.textContent = '🗑';
+      remove.title = 'Aufnahme löschen';
+      remove.setAttribute('aria-label', `${item.name} löschen`);
+      remove.addEventListener('click', async () => {
+        if (!(await confirmDialog(
+          `„${item.name}“ samt Transkripten und Review löschen?\n\nDie Dateien landen im Papierkorb und können wiederhergestellt werden.`,
+        ))) return;
+        let result;
+        try {
+          result = await api.delete_library_item(item.item_id);
+        } catch (error) {
+          showActionFailure(error);
+          return;
+        }
+        if (!result.ok) {
+          setViewStatus('library-status', result.error || 'Löschen fehlgeschlagen.', true);
+          return;
+        }
+        // Karte aus dem DOM nehmen statt neu zu scannen: der gezielte Eingriff
+        // behält Auswahl, Player-Zustand und Sortierung der übrigen Karten.
+        librarySelection.delete(item.item_id);
+        librarySelectableIds.delete(item.item_id);
+        libraryRenderedItemCount = Math.max(0, libraryRenderedItemCount - 1);
+        card.remove();
+        updateExportButton();
+        setViewStatus('library-status', `„${item.name}“ in den Papierkorb verschoben.`);
+      });
+      actions.append(remove);
       card.append(select, playButton, waveWrap, body, actions);
       target.append(card);
       requestAnimationFrame(() => renderMiniWave(canvas, item.peaks34 || []));
